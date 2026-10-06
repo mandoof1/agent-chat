@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Agent Chat</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%231b2427'/><circle cx='11' cy='16' r='5' fill='none' stroke='%23f0a43c' stroke-width='2.4'/><circle cx='22' cy='16' r='5' fill='none' stroke='%23cfd8d3' stroke-width='2.4'/><path d='M11 21c0 6 11 6 11 0' fill='none' stroke='%23f0a43c' stroke-width='2'/></svg>">
+  <link rel="stylesheet" href="/static/fonts/fonts.css">
+  <link rel="stylesheet" href="/static/vendor/hljs-dark.min.css">
+  <link rel="stylesheet" href="/static/style.css">
+  <script>try { const t = localStorage.getItem("theme"); if (t) document.documentElement.dataset.theme = t; } catch {}</script>
+</head>
+<body>
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+  <defs>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="4" y="4" width="6.5" height="6.5" rx="1.2"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.2"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.2"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.2"/></symbol>
+    <symbol id="i-memory" viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="2.6"/><path d="M5 6v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6V6"/><path d="M5 12v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6v-6"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="13" r="7.5"/><path d="M12 9v4.2l2.8 1.8M9 3h6"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10z"/></symbol>
+    <symbol id="i-auto" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></symbol>
+    <symbol id="i-clip" viewBox="0 0 24 24"><path d="M20 11.5 12.4 19a5 5 0 0 1-7.1-7.1l7.6-7.6a3.4 3.4 0 0 1 4.8 4.8l-7.5 7.5a1.7 1.7 0 0 1-2.4-2.4l6.9-6.9"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14"/></symbol>
+    <symbol id="i-compress" viewBox="0 0 24 24"><path d="M5 9h14M5 15h14M12 3v4M9.5 5 12 7.5 14.5 5M12 21v-4M9.5 19l2.5-2.5 2.5 2.5"/></symbol>
+    <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M15.5 4.5 19.5 8.5 9 19H5v-4z"/><path d="m13.5 6.5 4 4"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15M9.5 7V4.5h5V7M6.5 7l1 12.5h9l1-12.5M10.2 10.5v6M13.8 10.5v6"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M5 12h12M12 6l6 6-6 6"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5z" fill="currentColor"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24"><path d="M9 4h6l-1 5 3 3v2H7v-2l3-3zM12 14v6"/></symbol>
+    <symbol id="i-merge" viewBox="0 0 24 24"><path d="M6 4v4a4 4 0 0 0 4 4h4a4 4 0 0 1 4 4v4M18 4v4a4 4 0 0 1-4 4"/><path d="m15.5 17.5 2.5 2.5 2.5-2.5"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="1.5"/><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"/></symbol>
+    <symbol id="i-redo" viewBox="0 0 24 24"><path d="M19 8v5h-5"/><path d="M19 13a7 7 0 1 1-2-6.2"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/></symbol>
+    <symbol id="i-expand" viewBox="0 0 24 24"><path d="M5 9V5h4M19 9V5h-4M5 15v4h4M19 15v4h-4"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.5 3 8.2 7 10 4-1.8 7-5.5 7-10V6z"/></symbol>
+  </defs>
+</svg>
+
+<div id="app">
+  <div id="nav">
+    <nav id="rail" aria-label="Agents">
+      <svg id="cords" aria-hidden="true"></svg>
+      <div id="rail-agents"></div>
+      <button type="button" class="jack-item add" id="new-agent-btn" title="Create an agent">
+        <span class="jack"><svg class="ic"><use href="#i-plus"/></svg></span><span class="strip">New</span>
+      </button>
+      <span class="grow"></span>
+      <div class="rail-tools">
+        <button type="button" class="tool-btn" id="memory-btn" title="Memory: what your agents know about you"><svg class="ic"><use href="#i-memory"/></svg><span class="strip">Memory</span><span class="count" id="memory-count"></span></button>
+        <button type="button" class="tool-btn" id="routines-btn" title="Routines: agents that run on a schedule"><svg class="ic"><use href="#i-clock"/></svg><span class="strip">Routines</span></button>
+        <button type="button" class="tool-btn" id="settings-btn" title="Settings"><svg class="ic"><use href="#i-sliders"/></svg><span class="strip">Settings</span></button>
+        <button type="button" class="tool-btn" id="theme-btn" title="Theme: follows your system"><svg class="ic"><use href="#i-auto"/></svg><span class="strip" id="theme-label">Auto</span></button>
+      </div>
+    </nav>
+    <aside id="sidebar">
+      <div class="side-head" id="side-head"></div>
+      <div class="side-top">
+        <button id="new-chat-btn" class="btn primary wide">New chat</button>
+        <label class="search-box"><svg class="ic"><use href="#i-search"/></svg>
+          <input id="chat-search" type="search" placeholder="Search everything" title="Searches titles and message text (Ctrl+K)">
+          <kbd>Ctrl K</kbd>
+        </label>
+      </div>
+      <div class="side-scroll"><div id="chat-list"></div></div>
+      <div class="side-bottom">
+        <span id="server-status" class="server-status" title="Model server status"><i></i><span>connecting…</span></span>
+      </div>
+    </aside>
+  </div>
+
+  <main id="main">
+    <header id="chat-header" hidden>
+      <button id="menu-btn" class="icon-btn mobile-only" title="Chats"><svg class="ic"><use href="#i-menu"/></svg></button>
+      <div class="jack" id="hdr-avatar"></div>
+      <div class="hdr-text">
+        <div class="hdr-title" id="hdr-title" title="Click to rename"></div>
+        <div class="hdr-sub" id="hdr-sub"></div>
+      </div>
+      <div class="hdr-stats" id="hdr-stats"></div>
+      <div class="hdr-actions">
+        <button id="hdr-verbose" class="icon-btn" title="Show all thinking and tool details (Ctrl+O)" aria-pressed="false"><svg class="ic"><use href="#i-expand"/></svg></button>
+        <a id="hdr-export" class="icon-btn" title="Export this chat as Markdown" download><svg class="ic"><use href="#i-download"/></svg></a>
+        <button id="hdr-compact" class="icon-btn" title="Compact: summarize older messages to free up context"><svg class="ic"><use href="#i-compress"/></svg></button>
+        <button id="hdr-edit-agent" class="icon-btn" title="Edit this agent"><svg class="ic"><use href="#i-pencil"/></svg></button>
+        <button id="hdr-delete" class="icon-btn danger" title="Delete chat"><svg class="ic"><use href="#i-trash"/></svg></button>
+      </div>
+    </header>
+
+    <section id="welcome">
+      <button class="icon-btn mobile-only welcome-menu" title="Chats" onclick="document.body.classList.add('side-open')"><svg class="ic"><use href="#i-menu"/></svg></button>
+      <div class="welcome-inner">
+        <div class="readout" id="welcome-readout">LOCAL SWITCHBOARD</div>
+        <h1>Who do you need?</h1>
+        <p class="lede">Each agent has its own job, tools and instructions. They share what they know about you, and they can patch each other in when a job needs another skill.</p>
+        <div id="onboarding" hidden>
+          <div>
+            <div class="note-title">They don't know you yet</div>
+            <p>Tell them your name, what you work on and how you like answers. Every agent will remember it.</p>
+          </div>
+          <div class="row">
+            <button type="button" id="onboard-chat" class="btn primary sm">Introduce yourself</button>
+            <button type="button" id="onboard-memory" class="btn ghost sm">Add facts by hand</button>
+          </div>
+        </div>
+        <div id="welcome-agents" class="agent-grid"></div>
+      </div>
+    </section>
+
+    <section id="messages" hidden>
+      <div id="history"></div>
+      <div id="live"></div>
+    </section>
+
+    <form id="composer" hidden>
+      <div id="queue" hidden></div>
+      <div id="attachments" hidden></div>
+      <div class="composer-box">
+        <button type="button" id="attach-btn" class="icon-btn" title="Attach files (or drop or paste them)"><svg class="ic"><use href="#i-clip"/></svg></button>
+        <input type="file" id="file-input" multiple hidden>
+        <textarea id="input" rows="1" placeholder="Message" autocomplete="off"></textarea>
+        <button type="submit" id="send-btn" class="btn primary" title="Send (Enter)">Send <svg class="ic"><use href="#i-send"/></svg></button>
+        <button type="button" id="stop-btn" class="btn danger" hidden title="Stop">Stop <svg class="ic"><use href="#i-stop"/></svg></button>
+      </div>
+      <div class="composer-hint">
+        <button type="button" id="mode-btn" class="mode-chip" title="Click to change whether agents ask before running commands and sending email"><svg class="ic"><use href="#i-shield"/></svg><span>Ask before acting</span></button>
+        <span class="grow"></span>
+        <span><kbd>Enter</kbd> send</span><span><kbd>Shift</kbd>+<kbd>Enter</kbd> new line</span><span><kbd>Ctrl</kbd>+<kbd>O</kbd> expand</span>
+      </div>
+    </form>
+
+    <div id="sub-banner" hidden>
+      <span id="sub-banner-text"></span>
+      <button type="button" id="sub-banner-stop" class="btn danger sm" hidden>Stop</button>
+      <button type="button" id="sub-banner-open" class="btn primary sm">Open</button>
+    </div>
+  </main>
+</div>
+<div id="drop-overlay" hidden><span>Drop files to attach them</span></div>
+<div id="scrim" onclick="document.body.classList.remove('side-open')"></div>
+
+<dialog id="agent-dialog">
+  <form method="dialog" id="agent-form">
+    <h2 id="agent-dialog-title">Edit agent</h2>
+    <label id="template-row">Start from a template
+      <select id="agent-template"></select>
+    </label>
+    <div class="row">
+      <label class="narrow">Icon<input name="emoji" maxlength="4" required></label>
+      <label class="grow">Name<input name="name" required maxlength="40"></label>
+      <label class="narrow">Color<input name="color" type="color"></label>
+    </div>
+    <label><span>Purpose <span class="hint">One line. Shown here and to agents that can call this one.</span></span>
+      <input name="purpose" maxlength="160">
+    </label>
+    <label>System prompt
+      <textarea name="system_prompt" rows="9"></textarea>
+    </label>
+    <fieldset>
+      <legend>Tools</legend>
+      <div id="tool-checks" class="checks"></div>
+      <label class="check"><input type="checkbox" name="confirm_shell"> Ask me before every shell command</label>
+      <label class="check"><input type="checkbox" name="memory"> Uses memory about you, and can remember new things</label>
+    </fieldset>
+    <fieldset id="delegates-fieldset">
+      <legend>Can talk to <span class="hint">needs “Talk to other agents”</span></legend>
+      <label class="check"><input type="checkbox" name="delegate_all"> Every other agent, including ones added later</label>
+      <div id="delegate-checks" class="checks"></div>
+    </fieldset>
+    <div class="row">
+      <label class="grow">Model
+        <select name="model"></select>
+      </label>
+      <label class="narrow2">Temperature
+        <input name="temperature" type="number" min="0" max="2" step="0.05" placeholder="default">
+      </label>
+    </div>
+    <label><span>Workspace folder <span class="hint">Where file and shell tools work.</span></span>
+      <input name="workspace" id="workspace-input">
+    </label>
+    <div class="dialog-actions">
+      <button type="button" id="agent-delete" class="btn danger ghost">Delete agent</button>
+      <span class="grow"></span>
+      <button value="cancel" formnovalidate class="btn ghost">Cancel</button>
+      <button value="save" class="btn primary">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="settings-dialog">
+  <form method="dialog" id="settings-form">
+    <h2>Settings</h2>
+    <label><span>Model server URL <span class="hint">Any OpenAI-compatible API: llama-server, Ollama, LM Studio.</span></span>
+      <input name="base_url" required placeholder="http://127.0.0.1:8080/v1">
+    </label>
+    <div class="row">
+      <label class="grow">API key<input name="api_key" placeholder="anything works for llama-server"></label>
+      <label class="grow">Default model
+        <select name="model"></select>
+      </label>
+    </div>
+    <label class="check"><input type="checkbox" name="auto_memory"> After each reply, let the model save new things it learned about you</label>
+    <label class="check danger-check"><input type="checkbox" name="bypass_approvals"> Bypass permissions: run shell commands and send email without asking me</label>
+    <label class="check"><input type="checkbox" name="auto_compact"> Compact long chats automatically when they fill
+      <input name="compact_at" type="number" min="30" max="95" class="inline-num"> % of the context window</label>
+    <div class="row">
+      <label class="grow"><span>Context size <span class="hint">Tokens. 0 asks the server.</span></span>
+        <input name="context_size" type="number" min="0" step="1024">
+      </label>
+      <label class="grow"><span>Max steps per turn <span class="hint">Rounds of tool use per message. 0 = no limit.</span></span>
+        <input name="max_steps" type="number" min="0" max="10000">
+      </label>
+    </div>
+    <div class="row">
+      <label class="grow"><span>Shell command timeout <span class="hint">Seconds a command may run. 0 = no limit.</span></span>
+        <input name="shell_timeout" type="number" min="0" step="30">
+      </label>
+      <label class="grow"><span>Search engine URL <span class="hint">A SearXNG instance for web_search. Empty scrapes DuckDuckGo (often blocked).</span></span>
+        <input name="search_url" placeholder="http://127.0.0.1:8888">
+      </label>
+    </div>
+    <div class="row">
+      <label class="grow"><span>Browser executable <span class="hint">Path to Brave (or another Chromium browser) for the Browser agent.</span></span>
+        <input name="browser_executable" placeholder="/usr/bin/brave">
+      </label>
+      <label class="check"><input type="checkbox" name="browser_headless"> Run the browser headless (no visible window)</label>
+    </div>
+    <div id="settings-test" class="hint"></div>
+    <details id="email-settings">
+      <summary>Email account <span class="hint" id="email-state"></span></summary>
+      <p class="hint">Lets the Mail agent read (IMAP) and send (SMTP) your email. For Gmail, turn on 2-step verification and create an <b>app password</b>; your normal password won't work. The password is stored only on this computer, in <code>data/secrets.json</code>.</p>
+      <div class="row">
+        <label class="grow">Provider
+          <select id="email-preset">
+            <option value="">Choose to fill in servers…</option>
+            <option value="gmail">Gmail</option>
+            <option value="icloud">iCloud</option>
+            <option value="yahoo">Yahoo</option>
+            <option value="fastmail">Fastmail</option>
+          </select>
+        </label>
+        <label class="grow">Your name<input name="email_from_name" autocomplete="off" placeholder="shown as the sender"></label>
+      </div>
+      <div class="row">
+        <label class="grow">Email address<input name="email_username" autocomplete="off" placeholder="you@example.com"></label>
+        <label class="grow">App password<input name="email_password" type="password" autocomplete="new-password"></label>
+      </div>
+      <div class="row">
+        <label class="grow">Incoming server (IMAP)<input name="email_imap_host" autocomplete="off"></label>
+        <label class="narrow">Port<input name="email_imap_port" type="number"></label>
+        <label class="narrow2">Security<select name="email_imap_security"><option>ssl</option><option>starttls</option><option>none</option></select></label>
+      </div>
+      <div class="row">
+        <label class="grow">Outgoing server (SMTP)<input name="email_smtp_host" autocomplete="off"></label>
+        <label class="narrow">Port<input name="email_smtp_port" type="number"></label>
+        <label class="narrow2">Security<select name="email_smtp_security"><option>ssl</option><option>starttls</option><option>none</option></select></label>
+      </div>
+      <div class="row">
+        <button type="button" id="email-test-btn" class="btn ghost">Save and test email</button>
+        <span id="email-test" class="hint grow"></span>
+      </div>
+    </details>
+    <details id="calendar-settings">
+      <summary>Calendars <span class="hint" id="calendar-state"></span></summary>
+      <p class="hint">Lets the Planner, or any agent with “Read your calendars”, see your schedule. Read-only. Paste each calendar's private iCal link.
+        <b>Google</b>: calendar settings → your calendar → “Secret address in iCal format”.
+        <b>iCloud</b>: share the calendar publicly and copy the webcal:// link.
+        <b>Outlook</b>: Settings → Calendar → Shared calendars → Publish → ICS link.
+        A path to an .ics file also works. Links stay on this computer.</p>
+      <div id="calendar-list"></div>
+      <div class="row">
+        <label class="narrow3">Name<input id="calendar-name" placeholder="Personal" autocomplete="off"></label>
+        <label class="grow">iCal link or .ics path<input id="calendar-url" placeholder="https://… or webcal://…" autocomplete="off"></label>
+        <button type="button" id="calendar-add" class="btn ghost">Add</button>
+      </div>
+      <div class="row">
+        <button type="button" id="calendar-test-btn" class="btn ghost">Test calendars</button>
+        <span id="calendar-test" class="hint grow" style="white-space:pre-line"></span>
+      </div>
+    </details>
+    <div class="dialog-actions">
+      <button type="button" id="settings-test-btn" class="btn ghost">Test connection</button>
+      <span class="grow"></span>
+      <button value="cancel" formnovalidate class="btn ghost">Cancel</button>
+      <button value="save" class="btn primary">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="pick-dialog">
+  <form method="dialog">
+    <h2>New chat with</h2>
+    <div id="pick-agents" class="agent-grid"></div>
+    <div class="dialog-actions">
+      <span class="grow"></span>
+      <button value="cancel" class="btn ghost">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="memory-dialog">
+  <form method="dialog" id="memory-form">
+    <h2>Memory <span class="readout" id="memory-total"></span></h2>
+    <p class="hint">What your agents remember about you. They add to it as you chat. Pinned facts go to every agent in every chat. Delete anything you don't want kept.</p>
+    <div class="row">
+      <label class="search-box grow"><svg class="ic"><use href="#i-search"/></svg><input id="memory-search" type="search" placeholder="Search memories" autocomplete="off"></label>
+      <select id="memory-category" class="narrow3"></select>
+    </div>
+    <div class="row">
+      <input id="memory-new" class="grow" placeholder="Tell them something, like “I prefer short answers”" autocomplete="off">
+      <button type="button" id="memory-add-btn" class="btn primary">Add</button>
+      <button type="button" id="memory-tidy-btn" class="btn ghost" title="Let the model merge duplicates and fix contradictions">Tidy up</button>
+    </div>
+    <div id="memory-list"></div>
+    <div class="dialog-actions">
+      <span class="grow"></span>
+      <button value="close" class="btn ghost">Close</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="routines-dialog">
+  <form method="dialog" id="routines-form">
+    <h2>Routines</h2>
+    <p class="hint">Agents that do something on a schedule, like a morning briefing. Each routine keeps its own chat, so you can read every run and reply to follow up. Routines run only while this app is running.</p>
+    <div id="routine-list"></div>
+    <details id="routine-editor">
+      <summary id="routine-editor-title">New routine</summary>
+      <label id="routine-template-row">Start from
+        <select id="routine-template"></select>
+      </label>
+      <div class="row">
+        <label class="grow">Name<input name="r_name" maxlength="80"></label>
+        <label class="grow">Agent<select name="r_agent"></select></label>
+      </div>
+      <label>What should it do?<textarea name="r_prompt" rows="4"></textarea></label>
+      <div class="row wrap">
+        <label class="narrow2">Repeat
+          <select name="r_type"><option value="daily">At a set time</option><option value="interval">Every few minutes or hours</option></select>
+        </label>
+        <label class="narrow2 r-daily">Time<input name="r_time" type="time" value="08:00"></label>
+        <label class="narrow2 r-interval">Every (minutes)<input name="r_minutes" type="number" min="5" value="60"></label>
+      </div>
+      <div class="r-daily days" id="r-days"></div>
+      <div class="row">
+        <span class="grow"></span>
+        <button type="button" id="routine-cancel" class="btn ghost">Cancel</button>
+        <button type="button" id="routine-save" class="btn primary">Save routine</button>
+      </div>
+    </details>
+    <div class="dialog-actions">
+      <span class="grow"></span>
+      <button value="close" class="btn ghost">Close</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" role="status" hidden></div>
+
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/vendor/purify.min.js"></script>
+<script src="/static/vendor/highlight.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
