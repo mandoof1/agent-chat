@@ -73,7 +73,8 @@ def _row(r: sqlite3.Row) -> dict:
 
 
 def _words(text: str) -> list[str]:
-    return [w for w in re.findall(r"[a-z0-9][a-z0-9'+#.-]*", text.lower()) if len(w) > 2 and w not in STOPWORDS]
+    words = (w.rstrip(".'") for w in re.findall(r"[a-z0-9][a-z0-9'+#.-]*", text.lower()))  # "answers." == "answers"
+    return [w for w in words if len(w) > 2 and w not in STOPWORDS]
 
 
 def _similarity(a: str, b: str) -> float:

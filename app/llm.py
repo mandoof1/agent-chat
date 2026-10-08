@@ -5,6 +5,7 @@ stream and `timings` stats), Ollama, LM Studio, vLLM, etc.
 """
 
 import json
+import time
 from typing import Awaitable, Callable
 
 import httpx
@@ -24,6 +25,8 @@ class Completion:
         self.finish_reason: str | None = None
         self.usage: dict | None = None
         self.timings: dict | None = None
+        self.reason_t0: float | None = None  # when the first / last piece of thinking arrived
+        self.reason_t1: float | None = None
 
     def message(self) -> dict:
         msg = {"role": "assistant", "content": self.content}
@@ -49,6 +52,8 @@ class Completion:
             stats["tok_per_s"] = self.timings.get("predicted_per_second")
             stats["prompt_per_s"] = self.timings.get("prompt_per_second")
             stats["cached_tokens"] = self.timings.get("cache_n")
+        if self.reasoning and self.reason_t0 is not None:
+            stats["think_s"] = round(max(0.0, (self.reason_t1 or self.reason_t0) - self.reason_t0), 1)
         return {k: v for k, v in stats.items() if v is not None}
 
 
@@ -70,14 +75,16 @@ async def stream_chat(
     temperature: float | None,
     out: Completion,
     on_delta: Callable[..., Awaitable[None]],  # (kind, text) or (kind, text, meta) for tool calls
+    llama: bool = True,  # the server is llama-server: ask for its per-token timings (other servers may reject unknown fields)
 ) -> Completion:
     body = {
         "model": model or settings.get("model") or "local",
         "messages": messages,
         "stream": True,
         "stream_options": {"include_usage": True},
-        "timings_per_token": True,  # llama-server: token counts on every chunk, for the live context meter
     }
+    if llama:
+        body["timings_per_token"] = True  # token counts on every chunk, for the live context meter
     if tools:
         body["tools"] = tools
     if temperature is not None:
@@ -109,6 +116,9 @@ async def stream_chat(
                 for choice in chunk.get("choices") or []:
                     delta = choice.get("delta") or {}
                     if delta.get("reasoning_content"):
+                        now = time.monotonic()
+                        out.reason_t0 = out.reason_t0 if out.reason_t0 is not None else now
+                        out.reason_t1 = now
                         out.reasoning += delta["reasoning_content"]
                         await on_delta("reasoning", delta["reasoning_content"])
                     if delta.get("content"):
@@ -136,8 +146,8 @@ async def stream_chat(
 
 
 async def server_info(client: httpx.AsyncClient, settings: dict) -> dict:
-    """Model list plus, for llama-server, the context size from /props."""
-    info = {"ok": False, "models": [], "n_ctx": None, "error": None}
+    """Model list plus, for llama-server, the context size from /props (`kind` says which server it is)."""
+    info = {"ok": False, "models": [], "n_ctx": None, "error": None, "kind": "other", "base_url": _base(settings)}
     try:
         r = await client.get(_base(settings) + "/models", headers=_headers(settings), timeout=3)
         r.raise_for_status()
@@ -152,6 +162,7 @@ async def server_info(client: httpx.AsyncClient, settings: dict) -> dict:
         if r.status_code == 200:
             props = r.json()
             info["n_ctx"] = (props.get("default_generation_settings") or {}).get("n_ctx") or props.get("n_ctx")
+            info["kind"] = "llama"
     except Exception:
         pass
     return info

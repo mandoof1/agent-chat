@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Agent Chat</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%231b2427'/><circle cx='11' cy='16' r='5' fill='none' stroke='%23f0a43c' stroke-width='2.4'/><circle cx='22' cy='16' r='5' fill='none' stroke='%23cfd8d3' stroke-width='2.4'/><path d='M11 21c0 6 11 6 11 0' fill='none' stroke='%23f0a43c' stroke-width='2'/></svg>">
+  <link id="favicon" rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%231b2427'/><circle cx='11' cy='16' r='5' fill='none' stroke='%23f0a43c' stroke-width='2.4'/><circle cx='22' cy='16' r='5' fill='none' stroke='%23cfd8d3' stroke-width='2.4'/><path d='M11 21c0 6 11 6 11 0' fill='none' stroke='%23f0a43c' stroke-width='2'/></svg>">
   <link rel="stylesheet" href="/static/fonts/fonts.css">
   <link rel="stylesheet" href="/static/vendor/hljs-dark.min.css">
   <link rel="stylesheet" href="/static/style.css">
@@ -32,12 +32,28 @@
     <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor"/></symbol>
     <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5z" fill="currentColor"/></symbol>
     <symbol id="i-pin" viewBox="0 0 24 24"><path d="M9 4h6l-1 5 3 3v2H7v-2l3-3zM12 14v6"/></symbol>
-    <symbol id="i-merge" viewBox="0 0 24 24"><path d="M6 4v4a4 4 0 0 0 4 4h4a4 4 0 0 1 4 4v4M18 4v4a4 4 0 0 1-4 4"/><path d="m15.5 17.5 2.5 2.5 2.5-2.5"/></symbol>
     <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="1.5"/><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"/></symbol>
     <symbol id="i-redo" viewBox="0 0 24 24"><path d="M19 8v5h-5"/><path d="M19 13a7 7 0 1 1-2-6.2"/></symbol>
     <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/></symbol>
     <symbol id="i-expand" viewBox="0 0 24 24"><path d="M5 9V5h4M19 9V5h-4M5 15v4h4M19 15v4h-4"/></symbol>
     <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.5 3 8.2 7 10 4-1.8 7-5.5 7-10V6z"/></symbol>
+    <symbol id="i-branch" viewBox="0 0 24 24"><circle cx="7" cy="5" r="2"/><circle cx="7" cy="19" r="2"/><circle cx="17" cy="9" r="2"/><path d="M7 7v10M17 11c0 3-4 3-10 4"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 6.5A1.5 1.5 0 0 1 5 5h4.5l2 2.5H19a1.5 1.5 0 0 1 1.5 1.5v8.5A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5z"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M6.5 3.5h7l4 4V20a.5.5 0 0 1-.5.5H6.5A.5.5 0 0 1 6 20V4a.5.5 0 0 1 .5-.5z"/><path d="M13.5 3.5v4h4"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="1.5"/><circle cx="9" cy="10" r="1.6"/><path d="m4.5 17 5-5 3.5 3.5 2.5-2.5 4.5 4.5"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="6" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="18" cy="12" r="1.6" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v13M6.5 12.5 12 18l5.5-5.5"/></symbol>
+    <symbol id="i-left" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+    <symbol id="i-right" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-command" viewBox="0 0 24 24"><path d="M9 6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3z"/></symbol>
+    <symbol id="i-sidebar" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="1.5"/><path d="M9.5 5v14"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M19 11a7 7 0 0 0-12.5-3.5M5 13a7 7 0 0 0 12.5 3.5"/><path d="M19 5v3.5h-3.5M5 19v-3.5h3.5"/></symbol>
+    <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="3" y="6.5" width="18" height="11" rx="1.5"/><path d="M7 10h.01M11 10h.01M15 10h.01M7 13.5h.01M17 13.5h.01M10 13.5h4"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"/><circle cx="12" cy="12" r="2.8"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V5M7.5 9.5 12 5l4.5 4.5M5 19.5h14"/></symbol>
+    <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 3 5 13.5h6L10 21l8-10.5h-6z"/></symbol>
   </defs>
 </svg>
 
@@ -60,15 +76,18 @@
     <aside id="sidebar">
       <div class="side-head" id="side-head"></div>
       <div class="side-top">
-        <button id="new-chat-btn" class="btn primary wide">New chat</button>
+        <div class="row">
+          <button id="new-chat-btn" class="btn primary grow">New chat</button>
+          <button type="button" id="palette-btn" class="btn icon-only" title="Search and commands (Ctrl+K)"><svg class="ic"><use href="#i-command"/></svg></button>
+        </div>
         <label class="search-box"><svg class="ic"><use href="#i-search"/></svg>
-          <input id="chat-search" type="search" placeholder="Search everything" title="Searches titles and message text (Ctrl+K)">
-          <kbd>Ctrl K</kbd>
+          <input id="chat-search" type="search" placeholder="Filter chats" title="Filter by title or content" autocomplete="off">
         </label>
       </div>
       <div class="side-scroll"><div id="chat-list"></div></div>
       <div class="side-bottom">
         <span id="server-status" class="server-status" title="Model server status"><i></i><span>connecting…</span></span>
+        <button type="button" class="icon-btn sm" id="collapse-btn" title="Hide the chat list (Ctrl+B)"><svg class="ic"><use href="#i-sidebar"/></svg></button>
       </div>
     </aside>
   </div>
@@ -76,6 +95,7 @@
   <main id="main">
     <header id="chat-header" hidden>
       <button id="menu-btn" class="icon-btn mobile-only" title="Chats"><svg class="ic"><use href="#i-menu"/></svg></button>
+      <button id="expand-btn" class="icon-btn desktop-collapsed" title="Show the chat list (Ctrl+B)"><svg class="ic"><use href="#i-sidebar"/></svg></button>
       <div class="jack" id="hdr-avatar"></div>
       <div class="hdr-text">
         <div class="hdr-title" id="hdr-title" title="Click to rename"></div>
@@ -83,60 +103,94 @@
       </div>
       <div class="hdr-stats" id="hdr-stats"></div>
       <div class="hdr-actions">
+        <button id="hdr-files" class="icon-btn" title="Workspace files (Ctrl+.)" aria-pressed="false"><svg class="ic"><use href="#i-folder"/></svg></button>
         <button id="hdr-verbose" class="icon-btn" title="Show all thinking and tool details (Ctrl+O)" aria-pressed="false"><svg class="ic"><use href="#i-expand"/></svg></button>
-        <a id="hdr-export" class="icon-btn" title="Export this chat as Markdown" download><svg class="ic"><use href="#i-download"/></svg></a>
+        <button id="hdr-export" class="icon-btn" title="Export this chat"><svg class="ic"><use href="#i-download"/></svg></button>
         <button id="hdr-compact" class="icon-btn" title="Compact: summarize older messages to free up context"><svg class="ic"><use href="#i-compress"/></svg></button>
-        <button id="hdr-edit-agent" class="icon-btn" title="Edit this agent"><svg class="ic"><use href="#i-pencil"/></svg></button>
-        <button id="hdr-delete" class="icon-btn danger" title="Delete chat"><svg class="ic"><use href="#i-trash"/></svg></button>
+        <button id="hdr-more" class="icon-btn" title="More"><svg class="ic"><use href="#i-more"/></svg></button>
       </div>
     </header>
 
-    <section id="welcome">
-      <button class="icon-btn mobile-only welcome-menu" title="Chats" onclick="document.body.classList.add('side-open')"><svg class="ic"><use href="#i-menu"/></svg></button>
-      <div class="welcome-inner">
-        <div class="readout" id="welcome-readout">LOCAL SWITCHBOARD</div>
-        <h1>Who do you need?</h1>
-        <p class="lede">Each agent has its own job, tools and instructions. They share what they know about you, and they can patch each other in when a job needs another skill.</p>
-        <div id="onboarding" hidden>
-          <div>
-            <div class="note-title">They don't know you yet</div>
-            <p>Tell them your name, what you work on and how you like answers. Every agent will remember it.</p>
+    <div id="body-row">
+      <div id="chat-col">
+        <section id="welcome">
+          <button class="icon-btn mobile-only welcome-menu" title="Chats" onclick="document.body.classList.add('side-open')"><svg class="ic"><use href="#i-menu"/></svg></button>
+          <div class="welcome-inner">
+            <div class="readout" id="welcome-readout">Local switchboard</div>
+            <h1>Who do you need?</h1>
+            <p class="lede">Each agent has its own job, tools and instructions. They share what they know about you, and they patch each other in when a job needs another skill.</p>
+            <div id="offline-note" class="note" hidden>
+              <div>
+                <div class="note-title">The model server isn't reachable</div>
+                <p id="offline-text">Start llama-server (or point Settings at the server you use), then come back here.</p>
+              </div>
+              <div class="row">
+                <button type="button" id="offline-settings" class="btn primary sm">Open settings</button>
+                <button type="button" id="offline-retry" class="btn ghost sm">Check again</button>
+              </div>
+            </div>
+            <div id="onboarding" class="note" hidden>
+              <div>
+                <div class="note-title">They don't know you yet</div>
+                <p>Tell them your name, what you work on and how you like answers. Every agent will remember it.</p>
+              </div>
+              <div class="row">
+                <button type="button" id="onboard-chat" class="btn primary sm">Introduce yourself</button>
+                <button type="button" id="onboard-memory" class="btn ghost sm">Add facts by hand</button>
+              </div>
+            </div>
+            <div id="welcome-recent" hidden>
+              <div class="section-label">Pick up where you left off</div>
+              <div id="recent-list" class="recent-list"></div>
+            </div>
+            <div id="welcome-agents" class="agent-grid"></div>
           </div>
-          <div class="row">
-            <button type="button" id="onboard-chat" class="btn primary sm">Introduce yourself</button>
-            <button type="button" id="onboard-memory" class="btn ghost sm">Add facts by hand</button>
+        </section>
+
+        <section id="messages" hidden>
+          <div id="history"></div>
+          <div id="live"></div>
+        </section>
+        <button type="button" id="jump-btn" class="jump" hidden><svg class="ic"><use href="#i-down"/></svg><span>Newest</span></button>
+
+        <form id="composer" hidden>
+          <div id="offline-bar" hidden>
+            <span id="offline-bar-text">The model server isn't reachable.</span>
+            <button type="button" class="btn ghost sm" id="offline-bar-settings">Open settings</button>
           </div>
+          <div id="queue" hidden></div>
+          <div id="attachments" hidden></div>
+          <div class="composer-box">
+            <button type="button" id="attach-btn" class="icon-btn" title="Attach files (or drop or paste them)"><svg class="ic"><use href="#i-clip"/></svg></button>
+            <input type="file" id="file-input" multiple hidden>
+            <textarea id="input" rows="1" placeholder="Message" autocomplete="off"></textarea>
+            <button type="submit" id="send-btn" class="btn primary" title="Send (Enter)"><span>Send</span><svg class="ic"><use href="#i-send"/></svg></button>
+            <button type="button" id="stop-btn" class="btn danger" hidden title="Stop the agent"><span>Stop</span><svg class="ic"><use href="#i-stop"/></svg></button>
+          </div>
+          <div class="composer-hint">
+            <button type="button" id="mode-btn" class="mode-chip" title="Click to change whether agents ask before running commands and sending email"><svg class="ic"><use href="#i-shield"/></svg><span>Asks before acting</span></button>
+            <span class="grow"></span>
+            <span><kbd>Enter</kbd> send</span><span><kbd>Shift</kbd>+<kbd>Enter</kbd> new line</span><button type="button" class="linkish" id="hint-shortcuts"><kbd>?</kbd> shortcuts</button>
+          </div>
+        </form>
+
+        <div id="sub-banner" hidden>
+          <span id="sub-banner-text"></span>
+          <button type="button" id="sub-banner-stop" class="btn danger sm" hidden>Stop</button>
+          <button type="button" id="sub-banner-open" class="btn primary sm">Open</button>
         </div>
-        <div id="welcome-agents" class="agent-grid"></div>
       </div>
-    </section>
 
-    <section id="messages" hidden>
-      <div id="history"></div>
-      <div id="live"></div>
-    </section>
-
-    <form id="composer" hidden>
-      <div id="queue" hidden></div>
-      <div id="attachments" hidden></div>
-      <div class="composer-box">
-        <button type="button" id="attach-btn" class="icon-btn" title="Attach files (or drop or paste them)"><svg class="ic"><use href="#i-clip"/></svg></button>
-        <input type="file" id="file-input" multiple hidden>
-        <textarea id="input" rows="1" placeholder="Message" autocomplete="off"></textarea>
-        <button type="submit" id="send-btn" class="btn primary" title="Send (Enter)">Send <svg class="ic"><use href="#i-send"/></svg></button>
-        <button type="button" id="stop-btn" class="btn danger" hidden title="Stop">Stop <svg class="ic"><use href="#i-stop"/></svg></button>
-      </div>
-      <div class="composer-hint">
-        <button type="button" id="mode-btn" class="mode-chip" title="Click to change whether agents ask before running commands and sending email"><svg class="ic"><use href="#i-shield"/></svg><span>Ask before acting</span></button>
-        <span class="grow"></span>
-        <span><kbd>Enter</kbd> send</span><span><kbd>Shift</kbd>+<kbd>Enter</kbd> new line</span><span><kbd>Ctrl</kbd>+<kbd>O</kbd> expand</span>
-      </div>
-    </form>
-
-    <div id="sub-banner" hidden>
-      <span id="sub-banner-text"></span>
-      <button type="button" id="sub-banner-stop" class="btn danger sm" hidden>Stop</button>
-      <button type="button" id="sub-banner-open" class="btn primary sm">Open</button>
+      <aside id="files" hidden aria-label="Workspace files">
+        <div class="files-head">
+          <div class="files-title">Workspace</div>
+          <button type="button" class="icon-btn sm" id="files-refresh" title="Refresh"><svg class="ic"><use href="#i-refresh"/></svg></button>
+          <button type="button" class="icon-btn sm" id="files-close" title="Close"><svg class="ic"><use href="#i-x"/></svg></button>
+        </div>
+        <div class="files-path" id="files-path"></div>
+        <div class="files-list" id="files-list"></div>
+        <div class="files-foot" id="files-foot"></div>
+      </aside>
     </div>
   </main>
 </div>
@@ -145,7 +199,16 @@
 
 <dialog id="agent-dialog">
   <form method="dialog" id="agent-form">
-    <h2 id="agent-dialog-title">Edit agent</h2>
+    <div class="dialog-head">
+      <h2 id="agent-dialog-title">Edit agent</h2>
+      <div class="row" id="agent-tools-row">
+        <button type="button" id="agent-preview" class="btn ghost sm" title="See the full instructions this agent starts a chat with"><svg class="ic"><use href="#i-eye"/></svg>Preview prompt</button>
+        <button type="button" id="agent-duplicate" class="btn ghost sm" title="Make a copy of this agent"><svg class="ic"><use href="#i-copy"/></svg>Duplicate</button>
+        <button type="button" id="agent-export" class="btn ghost sm" title="Download this agent as JSON"><svg class="ic"><use href="#i-download"/></svg>Export</button>
+        <button type="button" id="agent-import" class="btn ghost sm" title="Load an agent from a JSON file"><svg class="ic"><use href="#i-upload"/></svg>Import</button>
+        <input type="file" id="agent-import-file" accept="application/json,.json" hidden>
+      </div>
+    </div>
     <label id="template-row">Start from a template
       <select id="agent-template"></select>
     </label>
@@ -154,11 +217,11 @@
       <label class="grow">Name<input name="name" required maxlength="40"></label>
       <label class="narrow">Color<input name="color" type="color"></label>
     </div>
-    <label><span>Purpose <span class="hint">One line. Shown here and to agents that can call this one.</span></span>
+    <label><span>Purpose <span class="hint">One line. Shown on its card and to agents that can call it.</span></span>
       <input name="purpose" maxlength="160">
     </label>
-    <label>System prompt
-      <textarea name="system_prompt" rows="9"></textarea>
+    <label>Instructions
+      <textarea name="system_prompt" rows="9" placeholder="Who this agent is, how it works, what it must and must not do."></textarea>
     </label>
     <fieldset>
       <legend>Tools</legend>
@@ -191,48 +254,80 @@
   </form>
 </dialog>
 
+<dialog id="prompt-dialog">
+  <form method="dialog">
+    <h2>What the agent starts with</h2>
+    <p class="hint" id="prompt-dialog-sub"></p>
+    <pre class="prompt-preview" id="prompt-preview"></pre>
+    <div class="dialog-actions">
+      <span class="grow"></span>
+      <button type="button" class="btn ghost" id="prompt-copy">Copy</button>
+      <button value="close" class="btn primary">Close</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="settings-dialog">
   <form method="dialog" id="settings-form">
     <h2>Settings</h2>
-    <label><span>Model server URL <span class="hint">Any OpenAI-compatible API: llama-server, Ollama, LM Studio.</span></span>
-      <input name="base_url" required placeholder="http://127.0.0.1:8080/v1">
-    </label>
-    <div class="row">
-      <label class="grow">API key<input name="api_key" placeholder="anything works for llama-server"></label>
-      <label class="grow">Default model
-        <select name="model"></select>
-      </label>
+    <div class="tabs" role="tablist" id="settings-tabs">
+      <button type="button" class="tab active" data-tab="model" role="tab">Model</button>
+      <button type="button" class="tab" data-tab="agents" role="tab">Agents</button>
+      <button type="button" class="tab" data-tab="tools" role="tab">Web &amp; browser</button>
+      <button type="button" class="tab" data-tab="email" role="tab">Email <span class="hint" id="email-state"></span></button>
+      <button type="button" class="tab" data-tab="calendars" role="tab">Calendars <span class="hint" id="calendar-state"></span></button>
     </div>
-    <label class="check"><input type="checkbox" name="auto_memory"> After each reply, let the model save new things it learned about you</label>
-    <label class="check danger-check"><input type="checkbox" name="bypass_approvals"> Bypass permissions: run shell commands and send email without asking me</label>
-    <label class="check"><input type="checkbox" name="auto_compact"> Compact long chats automatically when they fill
-      <input name="compact_at" type="number" min="30" max="95" class="inline-num"> % of the context window</label>
-    <div class="row">
-      <label class="grow"><span>Context size <span class="hint">Tokens. 0 asks the server.</span></span>
-        <input name="context_size" type="number" min="0" step="1024">
+
+    <section class="tab-pane active" data-pane="model">
+      <label><span>Model server URL <span class="hint">Any OpenAI-compatible API: llama-server, Ollama, LM Studio, vLLM.</span></span>
+        <input name="base_url" required placeholder="http://127.0.0.1:8080/v1">
       </label>
-      <label class="grow"><span>Max steps per turn <span class="hint">Rounds of tool use per message. 0 = no limit.</span></span>
-        <input name="max_steps" type="number" min="0" max="10000">
-      </label>
-    </div>
-    <div class="row">
-      <label class="grow"><span>Shell command timeout <span class="hint">Seconds a command may run. 0 = no limit.</span></span>
-        <input name="shell_timeout" type="number" min="0" step="30">
-      </label>
-      <label class="grow"><span>Search engine URL <span class="hint">A SearXNG instance for web_search. Empty scrapes DuckDuckGo (often blocked).</span></span>
+      <div class="row">
+        <label class="grow">API key<input name="api_key" placeholder="anything works for llama-server"></label>
+        <label class="grow">Default model
+          <select name="model"></select>
+        </label>
+      </div>
+      <div class="row">
+        <label class="grow"><span>Context size <span class="hint">Tokens. 0 asks the server (llama-server reports it).</span></span>
+          <input name="context_size" type="number" min="0" step="1024">
+        </label>
+        <label class="check grow"><input type="checkbox" name="auto_compact"> Compact long chats automatically at
+          <input name="compact_at" type="number" min="30" max="95" class="inline-num"> % of the context</label>
+      </div>
+      <div class="row">
+        <button type="button" id="settings-test-btn" class="btn ghost">Test connection</button>
+        <span id="settings-test" class="hint grow"></span>
+      </div>
+    </section>
+
+    <section class="tab-pane" data-pane="agents">
+      <div class="row">
+        <label class="grow"><span>Max steps per turn <span class="hint">Rounds of tool use per message. 0 = no limit.</span></span>
+          <input name="max_steps" type="number" min="0" max="10000">
+        </label>
+        <label class="grow"><span>Shell command timeout <span class="hint">Seconds a command may run. 0 = no limit.</span></span>
+          <input name="shell_timeout" type="number" min="0" step="30">
+        </label>
+      </div>
+      <label class="check"><input type="checkbox" name="auto_title"> Let the model name each chat after its first reply</label>
+      <label class="check"><input type="checkbox" name="auto_memory"> After each reply, let the model save new things it learned about you</label>
+      <label class="check danger-check"><input type="checkbox" name="bypass_approvals"> Bypass permissions: run shell commands and send email without asking me</label>
+      <p class="hint">Anything an agent reads (web pages, emails) could try to trick it. Only bypass permissions when you trust the task.</p>
+    </section>
+
+    <section class="tab-pane" data-pane="tools">
+      <label><span>Search engine URL <span class="hint">A SearXNG instance for web_search. Empty scrapes DuckDuckGo, which often blocks it.</span></span>
         <input name="search_url" placeholder="http://127.0.0.1:8888">
       </label>
-    </div>
-    <div class="row">
-      <label class="grow"><span>Browser executable <span class="hint">Path to Brave (or another Chromium browser) for the Browser agent.</span></span>
+      <label><span>Browser executable <span class="hint">Path to Brave (or another Chromium browser) for the Browser agent.</span></span>
         <input name="browser_executable" placeholder="/usr/bin/brave">
       </label>
       <label class="check"><input type="checkbox" name="browser_headless"> Run the browser headless (no visible window)</label>
-    </div>
-    <div id="settings-test" class="hint"></div>
-    <details id="email-settings">
-      <summary>Email account <span class="hint" id="email-state"></span></summary>
-      <p class="hint">Lets the Mail agent read (IMAP) and send (SMTP) your email. For Gmail, turn on 2-step verification and create an <b>app password</b>; your normal password won't work. The password is stored only on this computer, in <code>data/secrets.json</code>.</p>
+    </section>
+
+    <section class="tab-pane" data-pane="email">
+      <p class="hint">Lets the Mail agent read (IMAP) and send (SMTP) your email. Gmail, iCloud, Yahoo and Fastmail need an <b>app password</b>; your normal password won't work. The password stays on this computer, in <code>data/secrets.json</code>.</p>
       <div class="row">
         <label class="grow">Provider
           <select id="email-preset">
@@ -263,10 +358,10 @@
         <button type="button" id="email-test-btn" class="btn ghost">Save and test email</button>
         <span id="email-test" class="hint grow"></span>
       </div>
-    </details>
-    <details id="calendar-settings">
-      <summary>Calendars <span class="hint" id="calendar-state"></span></summary>
-      <p class="hint">Lets the Planner, or any agent with “Read your calendars”, see your schedule. Read-only. Paste each calendar's private iCal link.
+    </section>
+
+    <section class="tab-pane" data-pane="calendars">
+      <p class="hint">Lets the Planner, or any agent with “Read your calendars”, see your schedule. Read-only. Paste each calendar's private iCal link:
         <b>Google</b>: calendar settings → your calendar → “Secret address in iCal format”.
         <b>iCloud</b>: share the calendar publicly and copy the webcal:// link.
         <b>Outlook</b>: Settings → Calendar → Shared calendars → Publish → ICS link.
@@ -281,9 +376,10 @@
         <button type="button" id="calendar-test-btn" class="btn ghost">Test calendars</button>
         <span id="calendar-test" class="hint grow" style="white-space:pre-line"></span>
       </div>
-    </details>
+    </section>
+
     <div class="dialog-actions">
-      <button type="button" id="settings-test-btn" class="btn ghost">Test connection</button>
+      <span class="hint" id="settings-version"></span>
       <span class="grow"></span>
       <button value="cancel" formnovalidate class="btn ghost">Cancel</button>
       <button value="save" class="btn primary">Save</button>
@@ -359,11 +455,58 @@
   </form>
 </dialog>
 
-<div id="toast" role="status" hidden></div>
+<dialog id="palette" class="palette">
+  <div class="palette-box">
+    <label class="palette-input"><svg class="ic"><use href="#i-search"/></svg>
+      <input id="palette-q" placeholder="Search chats, open an agent, run a command…" autocomplete="off" spellcheck="false">
+      <kbd>Esc</kbd>
+    </label>
+    <div id="palette-list" class="palette-list" role="listbox"></div>
+    <div class="palette-foot"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>Enter</kbd> open</span><span><kbd>Ctrl</kbd>+<kbd>K</kbd> toggle</span></div>
+  </div>
+</dialog>
+
+<dialog id="confirm-dialog" class="confirm">
+  <form method="dialog">
+    <h3 id="confirm-title">Are you sure?</h3>
+    <p id="confirm-text"></p>
+    <input id="confirm-input" hidden autocomplete="off">
+    <div class="dialog-actions">
+      <span class="grow"></span>
+      <button value="cancel" class="btn ghost" id="confirm-cancel">Cancel</button>
+      <button value="ok" class="btn primary" id="confirm-ok">OK</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="viewer-dialog" class="viewer">
+  <div class="viewer-head">
+    <div class="viewer-title" id="viewer-title"></div>
+    <span class="hint" id="viewer-meta"></span>
+    <a class="icon-btn" id="viewer-download" title="Download" download><svg class="ic"><use href="#i-download"/></svg></a>
+    <button type="button" class="icon-btn" id="viewer-copy" title="Copy contents"><svg class="ic"><use href="#i-copy"/></svg></button>
+    <button type="button" class="icon-btn" id="viewer-close" title="Close"><svg class="ic"><use href="#i-x"/></svg></button>
+  </div>
+  <div class="viewer-body" id="viewer-body"></div>
+</dialog>
+
+<dialog id="shortcuts-dialog">
+  <form method="dialog">
+    <h2>Keyboard shortcuts</h2>
+    <div class="shortcuts" id="shortcuts-list"></div>
+    <div class="dialog-actions">
+      <span class="grow"></span>
+      <button value="close" class="btn primary">Close</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="context-menu" class="menu" hidden role="menu"></div>
+<div id="toasts" role="status" aria-live="polite"></div>
 
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/purify.min.js"></script>
 <script src="/static/vendor/highlight.min.js"></script>
-<script src="/static/app.js"></script>
+<script type="module" src="/static/js/main.js"></script>
 </body>
 </html>
