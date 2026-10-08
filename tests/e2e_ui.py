@@ -12,6 +12,7 @@ import os
 import struct
 import sys
 import tempfile
+import time
 import zlib
 
 import httpx
@@ -46,8 +47,8 @@ async def desktop(page):
     errors = ERRORS
     print("== loads, lists the starter agents")
     await page.goto(B)
-    await expect(page.locator("#welcome h1")).to_have_text("Who do you need?")
-    await expect(page.locator(".jack-item[data-agent]:not(.all)")).to_have_count(9)
+    await expect(page.locator("#welcome h1")).to_contain_text("Pick an agent")
+    await expect(page.locator(".agent-row[data-agent]:not(.all)")).to_have_count(9)
     await expect(page.locator("#server-status")).to_have_class("server-status ok", timeout=5000)
     assert not errors, errors
 
@@ -60,13 +61,13 @@ async def desktop(page):
     await expect(page.locator("#history .md table")).to_be_visible(timeout=15000)            # finished, re-rendered from history
     await expect(page.locator("#history details.thinking summary")).to_contain_text("Thought for")
     await expect(page.locator("#history .md pre code.hljs")).to_be_visible()
-    await expect(page.locator("#history .turn-name .stat")).to_contain_text("tok/s")
+    await expect(page.locator("#history .turn-head .stat")).to_contain_text("tok/s")
     await expect(page.locator("#hdr-title")).to_have_text("Titled: hello there, show", timeout=8000)
     await expect(page.locator("#chat-list .chat-item.active .title")).to_contain_text("Titled: hello there")
     await shot(page, "ui-chat")
 
     print("== approval card: approve all for this run auto-approves the second command")
-    await page.click(".jack-item[data-agent='coder']")
+    await page.click(".agent-row[data-agent='coder']")
     await page.click("#new-chat-btn")
     await page.fill("#input", "shell twice: echo one")
     await page.keyboard.press("Enter")
@@ -141,28 +142,29 @@ async def desktop(page):
     print("== a chat that finishes while you look elsewhere gets an unread dot")
     other = await api("POST", "/api/chats", {"agent_id": "writer"})
     await api("POST", f"/api/chats/{other['id']}/run", {"content": "hello from elsewhere"})
-    await page.click(".jack-item.all")
+    await page.click(".agent-row.all")
     await expect(page.locator("#chat-list .chat-item:has-text('hello from elsewhere') .status.unread").first).to_be_visible(timeout=15000)
     await page.locator("#chat-list .chat-item:has-text('hello from elsewhere')").first.click()
     await expect(page.locator("#history .md")).to_contain_text("Markdown", timeout=10000)
-    await page.click(".jack-item.all")
+    await page.click(".agent-row.all")
     await expect(page.locator("#chat-list .chat-item.active .status.unread")).to_have_count(0)  # seen now
 
     print("== context menu: rename and pin")
     row = page.locator("#chat-list .chat-item:has-text('hello from elsewhere')").first
     await row.click(button="right")
     await page.click("#context-menu button:has-text('Rename')")
-    await page.fill("#confirm-input", "Renamed by test")
+    renamed = f"Renamed by test {int(time.time())}"
+    await page.fill("#confirm-input", renamed)
     await page.click("#confirm-ok")
-    await expect(page.locator("#chat-list .chat-item:has-text('Renamed by test')").first).to_be_visible(timeout=5000)
-    await page.locator("#chat-list .chat-item:has-text('Renamed by test')").first.click(button="right")
+    await expect(page.locator(f"#chat-list .chat-item:has-text({renamed!r})").first).to_be_visible(timeout=5000)
+    await page.locator(f"#chat-list .chat-item:has-text({renamed!r})").first.click(button="right")
     await page.click("#context-menu button:has-text('Pin to top')")
     await expect(page.locator("#chat-list .chat-group").first).to_have_text("Pinned", timeout=5000)
     await expect(page.locator("#chat-list .chat-item").first).to_contain_text("Renamed by test")
 
     print("== a dead model server shows an error with 'Try again'; the retry works once it is back")
     await api("PUT", "/api/settings", {"base_url": "http://127.0.0.1:9/v1"})
-    await page.locator("#chat-list .chat-item:has-text('Renamed by test')").first.click()
+    await page.locator(f"#chat-list .chat-item:has-text({renamed!r})").first.click()
     await page.fill("#input", "one more")
     await page.keyboard.press("Enter")
     await expect(page.locator("#history .error-box")).to_be_visible(timeout=10000)
@@ -195,7 +197,7 @@ async def desktop(page):
     await page.keyboard.press("Escape")
 
     print("== agent editor: prompt preview, duplicate, delete the copy")
-    await page.click(".jack-item[data-agent='writer']", button="right")
+    await page.click(".agent-row[data-agent='writer']", button="right")
     await page.click("#context-menu button:has-text('Edit agent')")
     await expect(page.locator("#agent-dialog")).to_be_visible()
     await page.click("#agent-preview")
@@ -205,7 +207,7 @@ async def desktop(page):
     await expect(page.locator("#agent-dialog-title")).to_have_text("Edit Writer copy", timeout=5000)
     await page.click("#agent-delete")
     await page.click("#confirm-ok")
-    await expect(page.locator(".jack-item[data-agent]:not(.all)")).to_have_count(9, timeout=5000)
+    await expect(page.locator(".agent-row[data-agent]:not(.all)")).to_have_count(9, timeout=5000)
 
 
 async def main():

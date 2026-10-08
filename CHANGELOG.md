@@ -2,8 +2,15 @@
 
 ## 0.2.0 — 2026-10-09
 
-A product-polish release: the UI was rebuilt as ES modules around the same switchboard idea,
-and the backend grew the pieces a daily driver needs.
+A product release: a new UI, and the backend pieces a daily driver needs.
+
+### New look
+- **Trace console.** Every reply is a trace: a line in the agent's color with its steps
+  (thinking, tool calls, handoffs to other agents in their own nested trace, the answer).
+- One sidebar: agents with a live status word (working, needs you, → Coder), then chats.
+  The patch-panel rail and the cords are gone; delegation is drawn inside the reply.
+- New type (Bricolage Grotesque for the UI, IBM Plex Mono for data), a near-black palette
+  with one electric-blue accent and amber for "needs you"; a light theme on the same tokens.
 
 ### New
 - **Command palette** (Ctrl+K): find chats by title or by what was said in them, start a chat

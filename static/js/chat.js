@@ -139,12 +139,8 @@ export function renderStats() {
       ? `Context window: ${st.context_tokens.toLocaleString()} of ${n.toLocaleString()} tokens (${Math.round(pct)}%). Updates live while the agent works; older messages are summarized at ${S.settings.compact_at || 70}%.`
       : `Prompt size: about ${st.context_tokens.toLocaleString()} tokens. Set the context size in Settings to see how full the window is.` });
     if (n) {
-      const segs = el("div", { class: "segs" });
-      for (let i = 0; i < 20; i++) {
-        const lit = pct >= (i + 0.5) * 5;
-        segs.append(el("i", { class: lit ? `on${i >= 18 ? " full" : i >= 14 ? " hi" : ""}` : "" }));
-      }
-      meter.append(segs);
+      const fill = el("i", { class: pct >= 90 ? "full" : pct >= 70 ? "hi" : "", style: `width:${Math.max(2, pct)}%` });
+      meter.append(el("div", { class: "bar" }, fill));
     }
     meter.append(el("span", { class: "label" }, `ctx ${fmtK(st.context_tokens)}${n ? " / " + fmtK(n) : ""}`));
     box.append(meter);
@@ -388,7 +384,7 @@ function toolCard(name, args, live) {
     const target = agentByName(args.agent);
     const text = args.message ?? args.task ?? "";
     card.style.setProperty("--c", target.color || "#7c6cff");
-    summary.append(el("span", { class: "patch" }, "Patch →"), avatar(target, "sm"), el("span", { class: "t-name" }, target.name),
+    summary.append(el("span", { class: "patch" }, svgIcon("handoff"), "handoff"), avatar(target, "xs"), el("span", { class: "t-name" }, target.name),
       el("span", { class: "t-arg" }, oneLine(text)), state);
     subBody = el("div", { class: "sub-body" });
     body.append(el("div", { class: "t-label" }, "Message"), el("div", { class: "sub-task" }, text), subBody);
@@ -493,10 +489,11 @@ function statLine(stats) {
 function makeTurn(agent, ts) {
   const stat = el("span", { class: "stat" });
   const when = el("span", { class: "when" }, clock(ts));
-  const content = el("div");
+  const content = el("div", { class: "trace" });
   const actions = el("div", { class: "turn-actions" });
-  const node = el("div", { class: "turn" }, avatar(agent),
-    el("div", { class: "turn-body" }, el("div", { class: "turn-name" }, el("span", { class: "call" }, agent.name), stat, when), content, actions));
+  const node = el("div", { class: "turn" },
+    el("div", { class: "turn-head" }, avatar(agent, "sm"), el("span", { class: "call" }, agent.name), stat, when),
+    el("div", { class: "turn-body" }, content, actions));
   node.style.setProperty("--c", agent.color || "#7c6cff");
   return {
     el: node, body: content, actions, texts: [],
@@ -587,15 +584,16 @@ export function renderHistory(upTo) {
   });
   if (!msgs.length && !S.running && !caller) {
     const a = agentById(S.chat.agent_id);
-    h.append(el("div", { class: "turn" }, avatar(a), el("div", { class: "turn-body" },
-      el("div", { class: "turn-name" }, el("span", { class: "call" }, a.name)),
-      el("div", { class: "md muted" }, a.purpose ? `Ready. My job: ${a.purpose}.` : "Ready when you are."))));
+    const t = makeTurn(a, null);
+    t.body.append(el("div", { class: "md muted" }, a.purpose ? `Ready. My job: ${a.purpose}.` : "Ready when you are."));
+    h.append(t.el);
   }
 }
 
 export function userBubble(m, index, from = null) {
   const text = m.content || "";
   const wrap = el("div", { class: "msg-user" + (from ? " from-agent" : "") });
+  if (from) wrap.style.setProperty("--c", from.color || "#7c6cff");
   const show = () => {
     wrap.innerHTML = "";
     const actions = el("div", { class: "actions" }, iconBtn("copy", "Copy", () => copyText(text)));
@@ -603,6 +601,11 @@ export function userBubble(m, index, from = null) {
       actions.prepend(iconBtn("pencil", "Edit and resend", edit));
       actions.append(iconBtn("branch", "Branch from here: a new chat with the conversation up to this message", () => forkChat(index + 1)));
     }
+    const who = el("div", { class: "who" },
+      from ? el("span", { class: "from" }, avatar(from, "xs"), `${from.name} asked`) : "You",
+      m._ts ? el("span", { class: "when" }, clock(m._ts)) : null,
+      m._queued ? el("span", { class: "queued-tag", title: "You sent this while the agent was working; it read it at its next step" }, "· sent while it worked") : null,
+      actions);
     const long = text.length > 1500;
     const bubble = el("div", { class: "bubble" }, long ? text.slice(0, 1200) + "…" : text);
     if (long) {
@@ -615,7 +618,6 @@ export function userBubble(m, index, from = null) {
       bubble.append(more);
     }
     const col = el("div", { class: "bubble-col" });
-    if (from) col.append(el("div", { class: "from" }, avatar(from, "sm"), from.name));
     if (m._images?.length) {
       col.append(el("div", { class: "msg-images" }, m._images.map((p) => {
         const src = fileUrl(S.chat?.agent_id, p);
@@ -624,7 +626,6 @@ export function userBubble(m, index, from = null) {
     }
     col.append(bubble);
     const meta = el("div", { class: "row", style: "gap:10px" });
-    if (m._queued) meta.append(el("span", { class: "queued-tag", title: "You sent this while the agent was working; it read it at its next step" }, "Sent while it worked"));
     if (m._recall) {
       const lines = m._recall.split("\n").filter(Boolean);
       const list = el("div", { class: "recall-list", hidden: true }, lines.map((l) => el("div", {}, l.replace(/^- \[\d+\] /, "• "))));
@@ -634,8 +635,7 @@ export function userBubble(m, index, from = null) {
       }, svgIcon("memory"), `${lines.length} ${lines.length === 1 ? "memory" : "memories"} recalled`));
       col.append(meta, list);
     } else if (meta.children.length) col.append(meta);
-    if (m._ts) col.append(el("div", { class: "when" }, clock(m._ts)));
-    wrap.append(actions, col);
+    wrap.append(who, col);
   };
   const edit = () => {
     if (S.running) return toast("Wait for the current reply or stop it first.", "info");

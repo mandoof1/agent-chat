@@ -1,4 +1,4 @@
-// The jack panel (agents, lamps, patch cords) and the call log (chat list).
+// The sidebar: the agent list (with what each one is doing) and the chat list.
 
 import { S, prefs, agentById, STATUS_TEXT } from "./state.js";
 import { $, el, svgIcon, avatar, api, timeAgo, dayGroup, highlight, iconBtn, downloadBlob } from "./util.js";
@@ -63,23 +63,32 @@ export async function refreshChats() {
   } catch {}
 }
 
-// ------------------------------------------------------------------- rail
+// ------------------------------------------------------------- agent list
 
 let dragId = null;
 
-function railItem(agent, title) {
+function stateWord(agent) {
+  const b = busyState(agent?.id);
+  if (!b) return "";
+  if (b === "waiting") return "needs you";
+  if (b === "running") return "working";
+  const waitingOn = S.chats.find((c) => c.parent && c.parent.caller_id === agent?.id && c.status && c.status !== "idle");
+  return waitingOn ? `→ ${agentById(waitingOn.agent_id).name}` : "waiting";
+}
+
+function agentRow(agent, title) {
   const b = busyState(agent?.id);
   const hint = { running: " (working)", waiting: " (needs your approval)", delegated: " (waiting on another agent)" }[b] || "";
   const item = el("button", {
     type: "button", "data-agent": agent?.id || "",
-    class: "jack-item" + (agent ? "" : " all") + ((agent?.id || "") === S.filter ? " active" : "") + (b ? ` is-${b}` : ""),
+    class: "agent-row" + (agent ? "" : " all") + ((agent?.id || "") === S.filter ? " active" : "") + (b ? ` is-${b}` : ""),
     title: title + hint + (agent ? "\nRight-click for options · drag to reorder" : ""),
     draggable: !!agent,
     onclick: () => { setFilter(agent?.id); if (agent) openActiveChat(agent.id); },
     oncontextmenu: (e) => { if (!agent) return; e.preventDefault(); agentMenu(agent, { x: e.clientX, y: e.clientY }); },
-  }, el("span", { class: "lamp" }),
-    agent ? avatar(agent) : el("span", { class: "jack" }, svgIcon("grid")),
-    el("span", { class: "strip" }, agent ? agent.name : "All"));
+  }, agent ? avatar(agent, "sm") : el("span", { class: "mark sm" }, svgIcon("grid")),
+    el("span", { class: "name" }, agent ? agent.name : "All chats"),
+    el("span", { class: "state" }, agent ? stateWord(agent) : ""));
   if (!agent) return item;
   item.addEventListener("dragstart", (e) => {
     dragId = agent.id;
@@ -113,7 +122,7 @@ function railItem(agent, title) {
   return item;
 }
 
-const clearDrop = () => $("#rail").querySelectorAll(".drop-before, .drop-after").forEach((n) => n.classList.remove("drop-before", "drop-after"));
+const clearDrop = () => $("#rail-agents").querySelectorAll(".drop-before, .drop-after").forEach((n) => n.classList.remove("drop-before", "drop-after"));
 
 function agentMenu(agent, at) {
   contextMenu([
@@ -123,47 +132,7 @@ function agentMenu(agent, at) {
   ], at);
 }
 
-// Patch cords: while an agent waits on another, draw a cord between their jacks
-// (from caller to callee, with a slow flow so you can see which way the call goes).
-export function drawCords() {
-  const svg = $("#cords");
-  const rail = $("#rail");
-  const ns = "http://www.w3.org/2000/svg";
-  svg.replaceChildren();
-  svg.style.height = rail.scrollHeight + "px";
-  const pairs = new Map();
-  for (const c of S.chats) {
-    if (c.parent && c.status && c.status !== "idle") pairs.set(`${c.parent.caller_id}>${c.agent_id}`, [c.parent.caller_id, c.agent_id]);
-  }
-  const box = rail.getBoundingClientRect();
-  let n = 0;
-  for (const [from, to] of pairs.values()) {
-    const a = rail.querySelector(`.jack-item[data-agent="${from}"] .jack`);
-    const b = rail.querySelector(`.jack-item[data-agent="${to}"] .jack`);
-    if (!a || !b) continue;
-    const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
-    const x = ra.right - box.left - 3;
-    const y0 = ra.top - box.top + rail.scrollTop + ra.height / 2;
-    const y1 = rb.top - box.top + rail.scrollTop + rb.height / 2;
-    const reach = Math.min(box.width - 5, x + 20 + n * 6);
-    const sag = Math.abs(y1 - y0) * 0.12;
-    const d = `M ${x} ${y0} C ${reach} ${y0 + sag}, ${reach} ${y1 + sag}, ${x} ${y1}`;
-    const color = agentById(from).color || "#f0a43c";
-    for (const [cls, attrs] of [["cord", { d, stroke: color }], ["flow", { d }]]) {
-      const path = document.createElementNS(ns, "path");
-      path.setAttribute("class", cls);
-      for (const [k, v] of Object.entries(attrs)) path.setAttribute(k, v);
-      svg.append(path);
-    }
-    for (const y of [y0, y1]) {
-      const plug = document.createElementNS(ns, "rect");
-      for (const [k, v] of Object.entries({ class: "plug", x: x - 4, y: y - 3.5, width: 8, height: 7, rx: 1.5, fill: color })) plug.setAttribute(k, v);
-      svg.append(plug);
-    }
-    n++;
-  }
-}
-window.addEventListener("resize", () => requestAnimationFrame(drawCords));
+export function drawCords() {}  // the trace inside each reply shows delegation now
 
 // -------------------------------------------------------------- chat list
 
@@ -254,27 +223,24 @@ function chatRow(c, q) {
 export function renderSidebar() {
   if (S.filter && !S.agents.some((a) => a.id === S.filter)) S.filter = "";
 
-  // jack panel: "all chats" + one jack per agent; the lamp shows what its chats are doing
+  // agents: "all chats" + one row per agent, with what it is doing right now
   const rail = $("#rail-agents");
   rail.innerHTML = "";
-  rail.append(railItem(null, "All chats"));
-  for (const a of S.agents) rail.append(railItem(a, `${a.name}${a.purpose ? ": " + a.purpose : ""}`));
-  requestAnimationFrame(drawCords);
+  rail.append(agentRow(null, "All chats"));
+  for (const a of S.agents) rail.append(agentRow(a, `${a.name}${a.purpose ? ": " + a.purpose : ""}`));
 
-  // call log header: which agent's chats we are looking at
+  // the chats section's label says whose chats we are looking at
   const head = $("#side-head");
   head.innerHTML = "";
   const fa = S.filter ? agentById(S.filter) : null;
   if (fa) {
-    head.append(el("div", { class: "meta" },
-      el("div", { class: "name" }, fa.name), el("div", { class: "purpose", title: fa.purpose }, fa.purpose)),
-      iconBtn("pencil", "Edit agent", () => openAgentDialog(fa.id)),
-      iconBtn("more", "Options", (e) => headMenu(fa, e.currentTarget)));
+    head.append(el("div", { class: "meta", title: fa.purpose }, avatar(fa, "xs"), el("span", { class: "name" }, `${fa.name} chats`)),
+      iconBtn("pencil", "Edit agent", () => openAgentDialog(fa.id), "xs"),
+      iconBtn("more", "Options", (e) => headMenu(fa, e.currentTarget), "xs"));
     $("#new-chat-btn").replaceChildren(svgIcon("plus"), `New ${fa.name} chat`);
   } else {
-    head.append(el("div", { class: "meta" }, el("div", { class: "name" }, "All chats"),
-      el("div", { class: "purpose" }, "Every chat you started. Pick an agent on the left to see its own work.")),
-      iconBtn("more", "Options", (e) => headMenu(null, e.currentTarget)));
+    head.append(el("div", { class: "meta" }, el("span", {}, "Chats")),
+      iconBtn("more", "Options", (e) => headMenu(null, e.currentTarget), "xs"));
     $("#new-chat-btn").replaceChildren(svgIcon("plus"), "New chat");
   }
 
@@ -323,14 +289,18 @@ export function agentCards(container, onPick) {
   for (const a of S.agents) {
     const busy = busyState(a.id);
     container.append(colored(card("agent-card" + (busy ? " busy" : ""), () => onPick(a),
-      el("span", { class: "lampdot", title: busy ? STATUS_TEXT[busy] : "" }),
-      el("div", { class: "top" }, avatar(a), el("span", { class: "call" }, a.name)),
-      el("div", { class: "purpose" }, a.purpose || "No job description yet."),
-      el("div", { class: "tags" }, toolTags(a))), a.color));
+      avatar(a, "lg"),
+      el("div", { class: "body" },
+        el("div", { class: "call" }, a.name, el("span", { class: "lampdot", title: busy ? STATUS_TEXT[busy] : "" })),
+        el("div", { class: "purpose" }, a.purpose || "No job description yet."),
+        el("div", { class: "tags" }, toolTags(a))),
+      svgIcon("right", "ic go")), a.color));
   }
   container.append(card("agent-card new", () => { $("#pick-dialog").close(); openAgentDialog(null); },
-    el("div", { class: "top" }, el("span", { class: "jack" }, svgIcon("plus")), el("span", { class: "call" }, "New agent")),
-    el("div", { class: "purpose" }, "Give it a job, instructions and tools. Start from a template, a blank sheet, or a file.")));
+    el("span", { class: "mark lg" }, svgIcon("plus")),
+    el("div", { class: "body" }, el("div", { class: "call" }, "New agent"),
+      el("div", { class: "purpose" }, "Give it a job, instructions and tools. Start from a template, a blank sheet, or a file.")),
+    svgIcon("right", "ic go")));
 }
 
 function colored(node, color) { node.style.setProperty("--c", color || "#7c6cff"); return node; }
@@ -355,7 +325,6 @@ export function setCollapsed(on) {
   S.sideCollapsed = on;
   prefs.set("sideCollapsed", on ? "1" : "0");
   document.body.classList.toggle("side-collapsed", on);
-  requestAnimationFrame(drawCords);
 }
 $("#collapse-btn").onclick = () => setCollapsed(true);
 $("#expand-btn").onclick = () => setCollapsed(false);

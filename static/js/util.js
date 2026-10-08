@@ -33,9 +33,9 @@ export function colored(node, color) {
   return node;
 }
 
-// An agent's jack: a socket ring in its color with its own icon inside.
+// An agent's mark: a rounded tile in its color with its own icon.
 export function avatar(agent, size = "") {
-  return colored(el("div", { class: "jack" + (size ? ` ${size}` : "") }, agent.emoji || "🤖"), agent.color);
+  return colored(el("div", { class: "mark" + (size ? ` ${size}` : "") }, agent.emoji || "🤖"), agent.color);
 }
 
 export function iconBtn(icon, title, onclick, cls = "") {
