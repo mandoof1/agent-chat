@@ -45,6 +45,17 @@ if [[ $WITH_UI == yes ]]; then
 else
   echo "=== browser + ui: skipped (no Brave at $BRAVE; set BROWSER_EXECUTABLE or pass --ui)"
 fi
+if command -v cargo >/dev/null 2>&1 || [[ -x "$HOME/.cargo/bin/cargo" ]]; then
+  export PATH="$HOME/.cargo/bin:$PATH"
+  echo "=== tui: building"
+  if (cd tui && cargo build --release -q && cargo test -q 2>/dev/null | grep -q "test result: ok"); then
+    run tui env XDG_CONFIG_HOME="$TMP/xdg" uv run --with pyte python tests/e2e_tui.py
+  else
+    echo "    FAILED (cargo build/test; see above)"; FAILED+=(tui-build)
+  fi
+else
+  echo "=== tui: skipped (no cargo; install Rust to test the terminal client)"
+fi
 
 echo
 if ((${#FAILED[@]})); then echo "FAILED: ${FAILED[*]}"; exit 1; else echo "all suites passed"; fi

@@ -129,6 +129,34 @@ port). It starts only this app, never the model.
   where it is. When you scroll up during a reply, a **Newest** pill takes you back down.
 - **Ctrl+B** hides the chat list to give the conversation the width.
 
+## Terminal client
+
+`tui/` holds a Rust terminal client that talks to the same app, so the web UI and the terminal
+share every chat, agent, memory and setting. It draws the same things the web UI does: the
+sidebar with agents and their live status, chats grouped by day, and every reply as a trace.
+
+```bash
+cd tui && cargo build --release          # needs a Rust toolchain (rustup.rs); ~1 min, 8 MB binary
+./target/release/agent-chat-tui          # or --url http://host:8765, --light, --plain
+```
+
+![The terminal client: the same handoff, approvals included](docs/img/tui.png)
+
+- **Everything is on the keyboard**: F1 lists it. Ctrl+K is the same palette as the web UI
+  (chats by content, agents, commands); `n` or a number starts a chat; Enter sends, or queues
+  while the agent works; `y` / `a` / `n` answer an approval; Ctrl+S stops; Alt+O opens every
+  thinking block and tool result; Alt+F is the workspace drawer (Enter opens a file in a
+  viewer); Alt+M memory, Alt+R routines, Alt+S settings, Alt+A the agent editor; F2 rename,
+  Alt+P pin, Ctrl+G branch, Ctrl+E edit and resend your last message, Ctrl+R regenerate or
+  retry, Ctrl+U attach a file by path, Ctrl+Y bypass permissions.
+- **Mouse works too**: click an agent or a chat, scroll the trace. Replies can be copied with
+  `c` on a selected turn (`[` and `]` select) through the terminal's clipboard (OSC 52).
+- Settings, agents, routines, email and calendars are edited in forms (Tab between fields,
+  Space toggles, Ctrl+S saves). Chat titles, unread dots, model-written titles, live shell
+  output, nested handoffs and compaction markers all arrive over the same event stream the
+  browser uses.
+- Light terminals: `--light`; to keep your terminal's own colors: `--plain`.
+
 ## Starter agents
 
 | Agent | Purpose | Tools |
@@ -349,9 +377,10 @@ app/tools.py      file, shell (with live output) and web tools
 app/browser.py    Playwright + Brave browser tools
 app/store.py      JSON storage: agents, chats (pin, fork), settings
 app/defaults.py   starter agents
-static/           the UI: index.html, style.css, js/ (ES modules, no build step)
+static/           the web UI: index.html, style.css, js/ (ES modules, no build step)
+tui/              the Rust terminal client (ratatui); talks to the same API
 data/             agents, chats, settings (JSON), memory.db, secrets.json
-tests/            mock model server, unit tests, end-to-end tests, run_all.sh
+tests/            mock model server, unit tests, end-to-end tests (web, browser, TUI), run_all.sh
 ```
 
 ## API
@@ -387,8 +416,10 @@ That runs, in order: `tests/test_unit.py` (history, compaction, routines, memory
 `tests/e2e_queue.py`, `tests/e2e_memory.py`, `tests/e2e_routines.py`, `tests/e2e_v2.py`
 (pinning, branching, exports, approve-all, titles, workspace, images, live shell output,
 agent order), `tests/e2e_calendar.py`, `tests/e2e_browser.py` (real headless Brave over a
-local page) and `tests/e2e_ui.py` (the web UI itself in headless Brave: streaming,
-approvals, files, palette, branching, images, unread, errors, keyboard, mobile).
+local page), `tests/e2e_ui.py` (the web UI itself in headless Brave: streaming,
+approvals, files, palette, branching, images, unread, errors, keyboard, mobile) and, when
+`cargo` is installed, `tests/e2e_tui.py` (the terminal client in a pseudo-terminal: the same
+flows, read back from an emulated screen).
 
 To run one suite by hand, start the mocks and the app yourself:
 
