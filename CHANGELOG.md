@@ -4,6 +4,13 @@
 
 A product release: a new UI, and the backend pieces a daily driver needs.
 
+### Terminal client
+- `tui/`: a Rust (ratatui) client for the same app. Sidebar with agents and live status, chats
+  grouped by day with unread dots, every reply as a trace with nested handoffs and approvals,
+  live shell output, the command palette, files drawer with a viewer, memory, routines,
+  settings, agent/routine/email/calendar editors, attachments, branching, pin/rename/export,
+  mouse support and OSC 52 copy. Tested end to end in a pseudo-terminal (`tests/e2e_tui.py`).
+
 ### New look
 - **Trace console.** Every reply is a trace: a line in the agent's color with its steps
   (thinking, tool calls, handoffs to other agents in their own nested trace, the answer).
