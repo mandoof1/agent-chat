@@ -6,6 +6,7 @@
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 UNIT="$HOME/.config/systemd/user/agent-chat.service"
+PORT="${PORT:-8765}"
 
 if [[ "${1:-}" == "--remove" ]]; then
   systemctl --user disable --now agent-chat.service 2>/dev/null || true
@@ -15,8 +16,8 @@ if [[ "${1:-}" == "--remove" ]]; then
   exit 0
 fi
 
-if ss -ltn 2>/dev/null | grep -q ':8765\b'; then
-  echo "Something is already using port 8765 (probably run.sh). Stop it first, then run this again."
+if ss -ltn 2>/dev/null | grep -q ":$PORT\b"; then
+  echo "Something is already using port $PORT (probably run.sh). Stop it first, then run this again."
   exit 1
 fi
 
@@ -28,7 +29,7 @@ After=network.target
 
 [Service]
 WorkingDirectory=$DIR
-ExecStart=$(command -v uv) run uvicorn app.main:app --host 127.0.0.1 --port 8765 --log-level warning
+ExecStart=$(command -v uv) run uvicorn app.main:app --host 127.0.0.1 --port $PORT --log-level warning
 Restart=on-failure
 
 [Install]
@@ -36,6 +37,6 @@ WantedBy=default.target
 UNITEOF
 systemctl --user daemon-reload
 systemctl --user enable --now agent-chat.service
-echo "Installed and running at http://127.0.0.1:8765"
+echo "Installed and running at http://127.0.0.1:$PORT"
 echo "Status: systemctl --user status agent-chat   ·   Logs: journalctl --user -u agent-chat"
 echo "Remove: $0 --remove"
