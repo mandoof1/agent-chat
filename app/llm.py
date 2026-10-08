@@ -5,6 +5,7 @@ stream and `timings` stats), Ollama, LM Studio, vLLM, etc.
 """
 
 import json
+import time
 from typing import Awaitable, Callable
 
 import httpx
@@ -24,6 +25,8 @@ class Completion:
         self.finish_reason: str | None = None
         self.usage: dict | None = None
         self.timings: dict | None = None
+        self.reason_t0: float | None = None  # when the first / last piece of thinking arrived
+        self.reason_t1: float | None = None
 
     def message(self) -> dict:
         msg = {"role": "assistant", "content": self.content}
@@ -49,6 +52,8 @@ class Completion:
             stats["tok_per_s"] = self.timings.get("predicted_per_second")
             stats["prompt_per_s"] = self.timings.get("prompt_per_second")
             stats["cached_tokens"] = self.timings.get("cache_n")
+        if self.reasoning and self.reason_t0 is not None:
+            stats["think_s"] = round(max(0.0, (self.reason_t1 or self.reason_t0) - self.reason_t0), 1)
         return {k: v for k, v in stats.items() if v is not None}
 
 
@@ -111,6 +116,9 @@ async def stream_chat(
                 for choice in chunk.get("choices") or []:
                     delta = choice.get("delta") or {}
                     if delta.get("reasoning_content"):
+                        now = time.monotonic()
+                        out.reason_t0 = out.reason_t0 if out.reason_t0 is not None else now
+                        out.reason_t1 = now
                         out.reasoning += delta["reasoning_content"]
                         await on_delta("reasoning", delta["reasoning_content"])
                     if delta.get("content"):
@@ -139,7 +147,7 @@ async def stream_chat(
 
 async def server_info(client: httpx.AsyncClient, settings: dict) -> dict:
     """Model list plus, for llama-server, the context size from /props (`kind` says which server it is)."""
-    info = {"ok": False, "models": [], "n_ctx": None, "error": None, "kind": "other"}
+    info = {"ok": False, "models": [], "n_ctx": None, "error": None, "kind": "other", "base_url": _base(settings)}
     try:
         r = await client.get(_base(settings) + "/models", headers=_headers(settings), timeout=3)
         r.raise_for_status()

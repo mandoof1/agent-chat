@@ -55,6 +55,11 @@ def broadcast(event: dict) -> None:
         q.put_nowait(event)
 
 
+def model_busy() -> bool:
+    """Is any run using the model right now? A run that waits for the user's approval isn't."""
+    return any(not r.approvals for r in runs.values())
+
+
 def chat_status(chat_id: str) -> str:
     """idle | running | delegated (waiting on another agent) | waiting (needs the user)."""
     view = views.get(chat_id)
@@ -739,7 +744,7 @@ def schedule_background(chat_id: str, agent: dict) -> None:
 
 async def _background(chat_id: str, agent: dict) -> None:
     await asyncio.sleep(1.5)
-    if runs:
+    if model_busy():
         return  # the model is busy; the next finished turn picks this up
     settings = store.get_settings()
     if settings.get("auto_title", True):

@@ -223,8 +223,10 @@ async def test_agents(c):
     assert after[:2] == ["coder", "assistant"] and set(after) == set(before), after
     # editing an agent keeps its position
     coder = next(a for a in r if a["id"] == "coder")
-    saved = (await c.put(f"{B}/api/agents/coder", json={k: v for k, v in coder.items() if k not in ("id", "order")} | {"purpose": "Edited"})).json()
+    body = {k: v for k, v in coder.items() if k not in ("id", "order")}
+    saved = (await c.put(f"{B}/api/agents/coder", json=body | {"purpose": "Edited"})).json()
     assert saved["order"] == 0 and saved["purpose"] == "Edited"
+    await c.put(f"{B}/api/agents/coder", json=body)  # put it back
     r = (await c.put(f"{B}/api/agents/order", json={"ids": before})).json()
     assert [a["id"] for a in r] == before
     p = (await c.get(f"{B}/api/agents/coder/prompt")).json()

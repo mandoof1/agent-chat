@@ -32,6 +32,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 app = FastAPI()
 NCTX = int(os.environ.get("MOCK_NCTX", "85000"))
+MODEL_ID = os.environ.get("MOCK_MODEL_ID", "mock-model")  # what /v1/models reports (screenshots use a realistic name)
 OVERFLOW_CHARS = int(os.environ.get("MOCK_OVERFLOW_CHARS", "0"))  # reject prompts longer than this
 
 
@@ -48,7 +49,7 @@ def pieces(text, n=6):
 
 @app.get("/v1/models")
 async def models():
-    return {"object": "list", "data": [{"id": "mock-model", "object": "model"}]}
+    return {"object": "list", "data": [{"id": MODEL_ID, "object": "model"}]}
 
 
 @app.get("/props")
@@ -137,6 +138,19 @@ async def completions(request: Request):
               and sum(m["role"] == "tool" for m in msgs) < 2):
             reasoning, text = "Once more.", ""
             tool = ("run_shell", {"command": history.split(" | ")[-1][len("shell twice:"):].strip() + " again"})
+        elif (last["role"] == "tool" and last["content"].startswith("Wrote") and "run_shell" in tools
+              and history.split(" | ")[-1].startswith("Create greet.py")):  # the README scenario: write, then run
+            reasoning, text = "Now run it.", ""
+            tool = ("run_shell", {"command": "python3 greet.py Hadi"})
+        elif last["role"] == "tool" and last["content"].startswith("exit code 0\nHello, Hadi!"):
+            reasoning = "It ran cleanly. Report the file and the output."
+            text = ("Done. `greet.py` is in the workspace and runs:\n\n```\n$ python3 greet.py Hadi\nHello, Hadi!\n```\n\n"
+                    "`--shout` upper-cases the greeting. Nothing else was changed.")
+        elif last["role"] == "tool" and agent == "Orchestrator" and "greet.py" in last["content"]:
+            reasoning = "The Coder finished and verified it. Summarize for the user."
+            text = ("The Coder wrote **greet.py** in the shared workspace and ran it:\n\n"
+                    "| Command | Output |\n|---|---|\n| `python3 greet.py Hadi` | `Hello, Hadi!` |\n\n"
+                    "Pass `--shout` for an upper-case greeting. Want me to have the Reviewer look it over?")
         elif last["role"] == "tool":
             text = f"Finished. The tool returned:\n\n```\n{last['content'][:200]}\n```"
             reasoning = "The tool ran; summarise the result."
@@ -215,6 +229,23 @@ async def completions(request: Request):
                     leaked = sum("Round " in (m.get("reasoning_content") or "") for m in msgs if m["role"] == "assistant")
                     reasoning = "Done now."
                     text = f"Final answer after {n} cut-offs. notes_in_payload={notes} leaked={leaked}"
+            elif user.startswith("Set up a greeting script") and "ask_agent" in tools:  # README screenshots
+                reasoning = ("The user wants a small script written and run. The Coder has the file and shell tools, "
+                             "so I'll hand it the whole task with the details it needs, then report back.")
+                tool = ("ask_agent", {"agent": "Coder", "message": "Create greet.py in the workspace: a tiny CLI that takes a "
+                        "name and an optional --shout flag and prints a greeting. Then run it once with `python3 greet.py Hadi` "
+                        "to prove it works, and tell me the output."})
+            elif user.startswith("Create greet.py") and "write_file" in tools:
+                reasoning = "Write the file first, then run it so I can report real output rather than a guess."
+                code = "\n".join(['"""Tiny CLI that greets people."""', "import argparse", "", "",
+                                  "def greet(name: str, shout: bool = False) -> str:",
+                                  '    msg = f"Hello, {name}!"', "    return msg.upper() if shout else msg", "", "",
+                                  "def main() -> None:", "    parser = argparse.ArgumentParser()",
+                                  '    parser.add_argument("name")', '    parser.add_argument("--shout", action="store_true")',
+                                  "    args = parser.parse_args()", "    print(greet(args.name, args.shout))", "", "",
+                                  'if __name__ == "__main__":', "    main()"])
+                tool = ("write_file", {"path": "greet.py", "content": code})
+                delay = 0.02
             elif "delegate" in user and "ask_agent" in tools:
                 tool = ("ask_agent", {"agent": "Coder", "message": "shell: echo hello from coder"})
             elif user.startswith("think long"):
