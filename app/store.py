@@ -119,7 +119,7 @@ def normalize_agent(data: dict) -> dict:
 def list_agents() -> list[dict]:
     agents = [_read(p) for p in sorted(AGENTS.glob("*.json"))]
     agents = [normalize_agent(a) for a in agents if a]
-    order = {a: i for i, a in enumerate(["assistant", "mail", "planner", "orchestrator", "coder", "researcher", "browser", "writer", "reviewer", "pentester"])}
+    order = {a: i for i, a in enumerate(["assistant", "mail", "planner", "orchestrator", "coder", "researcher", "browser", "writer", "reviewer"])}
     return sorted(agents, key=lambda a: (order.get(a["id"], 99), a["name"].lower()))
 
 
