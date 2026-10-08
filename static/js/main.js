@@ -3,7 +3,7 @@
 import { S, prefs } from "./state.js";
 import { $, $$, el, svgIcon, api, fmtK, isTyping } from "./util.js";
 import { toast, closeMenu } from "./ui.js";
-import { renderSidebar, refreshChats, agentCards, renderRecent, setCollapsed, markSeen, drawCords } from "./sidebar.js";
+import { renderSidebar, refreshChats, agentCards, renderRecent, setCollapsed, markSeen } from "./sidebar.js";
 import { openChat, newChat, renderHeader, renderStats } from "./chat.js";
 import { renderMode, renderOffline, returnToInput } from "./composer.js";
 import { openAgentDialog } from "./agents.js";
@@ -122,8 +122,7 @@ export function applyTheme(t) {
   if (t === "auto") delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = t;
   prefs.set("theme", t === "auto" ? null : t);
-  $("#theme-btn").replaceChildren(svgIcon(t === "light" ? "sun" : t === "dark" ? "moon" : "auto"),
-    el("span", { class: "strip" }, t === "auto" ? "Auto" : t === "light" ? "Light" : "Dark"));
+  $("#theme-btn").replaceChildren(svgIcon(t === "light" ? "sun" : t === "dark" ? "moon" : "auto"));
   $("#theme-btn").title = t === "auto" ? "Theme: follows your system (click to change)" : `Theme: ${t} (click to change)`;
 }
 export function cycleTheme() {
@@ -181,6 +180,7 @@ $("#new-chat-btn").onclick = () => {
   $("#pick-dialog").showModal();
 };
 $("#new-agent-btn").onclick = () => openAgentDialog(null);
+$("#brand-btn").onclick = () => openChat(null);
 $("#settings-btn").onclick = () => openSettings();
 let searchTimer;
 $("#chat-search").addEventListener("input", () => {
@@ -229,5 +229,4 @@ $("#files").hidden = !S.filesOpen;
   setInterval(pollServer, 10_000);
   const id = location.hash.match(/^#\/chat\/([\w-]+)/)?.[1];
   openChat(id && S.chats.some((c) => c.id === id) ? id : null);
-  requestAnimationFrame(drawCords);
 })();

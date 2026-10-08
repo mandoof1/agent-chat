@@ -16,19 +16,20 @@ machine: chats, memory, email and calendar credentials.
 
 ## Screenshots
 
-The left rail is a patch panel: one jack per agent, a lamp that shows what it's doing, and a
-cord between two jacks while one agent waits on another.
+Every reply is a **trace**: a line in the agent's color with its steps hanging off it, so you
+can read what the agent thought, which tools it called, and whom it handed work to. The
+sidebar lists the agents with what each one is doing right now, then your chats.
 
-![The agent gallery: nine starter agents, each with its own job and tools](docs/img/gallery.png)
+![The welcome page: nine starter agents, each with its own job and tools](docs/img/gallery.png)
 
-Delegation, live. The **Orchestrator** patches in the **Coder**, whose shell command waits for
-your approval. The nested card is the Coder's own chat; "Approve all for this run" lets the
+A handoff, live. The **Orchestrator** hands the task to the **Coder**, whose trace nests inside
+in its own color; its shell command waits for your approval. "Approve all for this run" lets the
 rest of the run go through without asking again.
 
-![Orchestrator delegating to Coder, with a shell command awaiting approval](docs/img/hero.png)
+![Orchestrator handing off to Coder, with a shell command awaiting approval](docs/img/hero.png)
 
-Thinking streams into its own block, every reply shows its speed and token counts, and the
-context meter updates live.
+Thinking opens inline on the trace, every reply shows its speed, token counts and thinking
+time, and the context bar in the header updates live.
 
 ![An assistant reply with an expanded thinking block and per-reply stats](docs/img/thinking.png)
 
@@ -43,7 +44,7 @@ A shared memory about you grows as you chat; pin the facts every agent should al
 
 ![The memory panel with pinned and categorized facts](docs/img/memory.png)
 
-Light theme, if you prefer it (the rail stays a dark panel in both).
+Light theme, if you prefer it.
 
 ![The Planner in the light theme](docs/img/light.png)
 
@@ -66,11 +67,10 @@ port). It starts only this app, never the model.
 
 ## Using it
 
-- **The rail** on the left has one jack per agent. Click a jack to see that agent's chats;
-  **All** shows the chats you started. Drag jacks to reorder them; right-click for options.
-  - **Amber blinking lamp:** the agent is working. Click its jack to watch.
-  - **Red blinking lamp:** it needs your approval. The tab's favicon gets a red dot too.
-  - **Steady amber lamp:** it's waiting on another agent, and a cord joins the two jacks.
+- **Agents** sit at the top of the sidebar, each with what it is doing right now: *working*,
+  *needs you* (an approval is waiting; the tab's favicon gets a dot too), or *→ Coder* when it
+  is waiting on another agent. Click an agent to see its chats; **All chats** shows the ones
+  you started. Drag agents to reorder them; right-click for options.
 - **The chat list** is grouped by day, with pinned chats on top. A dot marks a chat that got
   a reply while you were elsewhere. Right-click a chat (or click ⋯) to rename, pin, export or
   delete it; the ⋯ next to the list's title can delete every idle chat of that agent.
@@ -105,9 +105,10 @@ port). It starts only this app, never the model.
   messages go back into the message box unsent.
 - **Ctrl+O** (or the expand button) shows every thinking block and tool call in full,
   including inside delegated work, and new ones open as they stream. The choice is remembered.
-- **Live tool calls:** while an agent writes a tool call you watch it being written. A file
-  being created shows its code line by line with syntax highlighting; a shell command shows
-  its output while it runs; a browser screenshot shows the picture.
+- **Live tool calls:** every tool call is a step on the trace. While an agent writes one you
+  watch it being written. A file being created shows its code line by line with syntax
+  highlighting; a shell command shows its output while it runs; a browser screenshot shows
+  the picture.
 - **Permissions:** the chip under the message box shows the mode. "Asks before acting" (the
   default) asks you before every shell command and every email send. An approval card offers
   **Approve**, **Approve all for this run** (everything else this run asks for goes through,
@@ -116,7 +117,7 @@ port). It starts only this app, never the model.
   Anything an agent reads (web pages, emails) could try to trick it, so only bypass when you
   trust the task.
 - The **compact** button in the header summarizes older messages on demand.
-- The header shows a segmented context meter (`ctx 12k / 85k`) and the last reply's speed.
+- The header shows a context bar (`ctx 12k / 85k`) and the last reply's speed.
   Each reply's header shows its speed, tokens in and out, and how long it thought.
 - **Chat titles** are written by the model after the first reply (Settings → Agents turns it
   off). Click a title to rename it; a name you chose is never replaced.
@@ -171,8 +172,8 @@ Personal Assistant, Tutor, Translator, Brainstormer and Data Analyst.
   in the editor). Untick it to choose specific agents, or untick the "Talk to other agents"
   tool to make an agent work alone.
 - **Each conversation between two agents is its own chat.** It's listed under the agent
-  doing the work, marked "↳ … for Orchestrator". Open it (or click the busy agent's jack) to
-  watch live. These chats are read-only; you reply in the chat that started them.
+  doing the work, marked "↳ … for Orchestrator", and shown nested in the caller's trace. Open
+  it (or click the busy agent in the sidebar) to watch live. These chats are read-only; you reply in the chat that started them.
 - **Conversations are remembered.** Asking Coder again continues where it left off,
   including in later turns of the same chat. The caller can pass `new_conversation: true` to
   start fresh. Editing, regenerating or branching also drops what the agents said to each
