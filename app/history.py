@@ -53,7 +53,7 @@ def repair(messages: list[dict]) -> None:
             i += 1
 
 
-def to_llm(messages: list[dict], memory: bool = True) -> list[dict]:
+def to_llm(messages: list[dict], memory: bool = True, images: bool = False) -> list[dict]:
     """Strip UI-only fields (leading underscore) and UI-only messages. A user message's recalled
     memories (`_recall`, fixed when the message was sent) are appended to it.
 
@@ -65,7 +65,11 @@ def to_llm(messages: list[dict], memory: bool = True) -> list[dict]:
     note (see `continuation`); when several were cut off in a row, only the newest is sent.
 
     A message the user queued while the agent was working (`_queued`) is labelled as such, so the
-    model treats it as an aside to the task in progress rather than a fresh request."""
+    model treats it as an aside to the task in progress rather than a fresh request.
+
+    With images=True, a user message with attached images (`_images`, workspace paths) becomes a list
+    of content parts with `attach://<path>` placeholders that runner.inline_images turns into data URLs
+    right before the request (so the base64 never counts towards the context-size estimate)."""
     live = [i for i, m in enumerate(messages) if not m.get("_error")]
     last_user = max((i for i in live if messages[i].get("role") == "user"), default=-1)
     cut_off = {i for i in live if i > last_user and messages[i].get("_truncated")}
@@ -85,6 +89,9 @@ def to_llm(messages: list[dict], memory: bool = True) -> list[dict]:
             clean["content"] = f"{QUEUED_NOTE}\n{m['content']}"
         if memory and m.get("_recall") and m.get("role") == "user":
             clean["content"] = f"{clean['content']}\n\n[From your memory of the user, possibly relevant]\n{m['_recall']}"
+        if images and m.get("_images") and m.get("role") == "user":
+            clean["content"] = [{"type": "text", "text": clean["content"]}] + [
+                {"type": "image_url", "image_url": {"url": f"attach://{path}"}} for path in m["_images"]]
         out.append(clean)
     return out
 
@@ -108,15 +115,15 @@ def latest(chat: dict) -> dict | None:
     return comps[-1] if comps else None
 
 
-def payload(chat: dict, memory: bool = True) -> list[dict]:
+def payload(chat: dict, memory: bool = True, images: bool = False) -> list[dict]:
     """The conversation as the model sees it: latest summary (if any), then the verbatim tail."""
     c = latest(chat)
     if not c:
-        return to_llm(chat["messages"], memory)
+        return to_llm(chat["messages"], memory, images)
     head = "[Earlier conversation, summarized to save context]\n\n" + c["summary"]
     if c.get("request"):
         head += "\n\n[The request currently being worked on, verbatim]\n" + c["request"]
-    return [{"role": "user", "content": head}] + to_llm(chat["messages"][c["upto"]:], memory)
+    return [{"role": "user", "content": head}] + to_llm(chat["messages"][c["upto"]:], memory, images)
 
 
 def size(messages: list[dict], schemas: list[dict] | None) -> int:
@@ -226,7 +233,7 @@ async def compact(run, agent: dict, chat: dict, *, path: list, n_ctx: int, reaso
         try:
             await llm.stream_chat(client, settings, model=agent["model"], temperature=agent["temperature"], tools=None,
                                   messages=[{"role": "system", "content": SUMMARY_PROMPT}, {"role": "user", "content": request}],
-                                  out=comp, on_delta=on_delta)
+                                  out=comp, on_delta=on_delta, llama=run.llama)
             break
         except llm.LLMError as e:
             if attempt == 2 or not is_overflow(e):

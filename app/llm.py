@@ -70,14 +70,16 @@ async def stream_chat(
     temperature: float | None,
     out: Completion,
     on_delta: Callable[..., Awaitable[None]],  # (kind, text) or (kind, text, meta) for tool calls
+    llama: bool = True,  # the server is llama-server: ask for its per-token timings (other servers may reject unknown fields)
 ) -> Completion:
     body = {
         "model": model or settings.get("model") or "local",
         "messages": messages,
         "stream": True,
         "stream_options": {"include_usage": True},
-        "timings_per_token": True,  # llama-server: token counts on every chunk, for the live context meter
     }
+    if llama:
+        body["timings_per_token"] = True  # token counts on every chunk, for the live context meter
     if tools:
         body["tools"] = tools
     if temperature is not None:
@@ -136,8 +138,8 @@ async def stream_chat(
 
 
 async def server_info(client: httpx.AsyncClient, settings: dict) -> dict:
-    """Model list plus, for llama-server, the context size from /props."""
-    info = {"ok": False, "models": [], "n_ctx": None, "error": None}
+    """Model list plus, for llama-server, the context size from /props (`kind` says which server it is)."""
+    info = {"ok": False, "models": [], "n_ctx": None, "error": None, "kind": "other"}
     try:
         r = await client.get(_base(settings) + "/models", headers=_headers(settings), timeout=3)
         r.raise_for_status()
@@ -152,6 +154,7 @@ async def server_info(client: httpx.AsyncClient, settings: dict) -> dict:
         if r.status_code == 200:
             props = r.json()
             info["n_ctx"] = (props.get("default_generation_settings") or {}).get("n_ctx") or props.get("n_ctx")
+            info["kind"] = "llama"
     except Exception:
         pass
     return info

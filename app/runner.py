@@ -23,7 +23,10 @@ events for its path, re-based so the sub-chat page renders them like any other c
 """
 
 import asyncio
+import base64
 import json
+import logging
+import mimetypes
 import time
 from datetime import date
 
@@ -33,13 +36,18 @@ from . import agenda, browser, history, llm, mail, memory, store, tools
 from .history import repair
 
 MAX_DEPTH = 3
+MAX_IMAGES = 4              # images attached to one message that are sent to the model
+MAX_IMAGE_BYTES = 6_000_000
+TITLE_PROMPT = ("You name conversations. Given the first exchange of a chat, reply with a title of at most six "
+                "words that says what it is about: no quotes, no trailing period, no preamble.")
 
+log = logging.getLogger("agent_chat")
 client = httpx.AsyncClient()
 runs: dict[str, "Run"] = {}       # root chat id -> run
 views: dict[str, "View"] = {}     # chat id -> live view (root chats and active sub-chats)
 chat_subs: dict[str, set[asyncio.Queue]] = {}
 global_subs: set[asyncio.Queue] = set()
-memory_task: asyncio.Task | None = None  # background memory extraction (yields to real requests)
+memory_task: asyncio.Task | None = None  # background work after a turn: naming the chat, memory extraction
 
 
 def broadcast(event: dict) -> None:
@@ -77,6 +85,8 @@ class Run:
         self.bypassed: set[str] = set()  # tool calls that ran without asking (approvals bypassed)
         self.queue: list[dict] = []  # messages the user sent during this run, not delivered yet
         self.turn = self.base  # like base, for the newest turn (queued messages can start one)
+        self.auto_approve = False  # the user chose "approve everything for the rest of this run"
+        self.llama = True  # the model server is llama-server (per-token timings available)
         views[chat["id"]] = self.stack[0]
 
     def emit(self, type_: str, **data) -> None:
@@ -159,13 +169,15 @@ class Run:
         if self.n_ctx is None:
             settings = store.get_settings()
             info = await llm.server_info(client, settings)
+            self.llama = info.get("kind") == "llama"
             self.n_ctx = info.get("n_ctx") or int(settings.get("context_size") or 0) or None
         return self.n_ctx
 
     async def ask_approval(self, path: list, call_id: str, name: str, args: dict) -> bool:
-        if store.get_settings().get("bypass_approvals"):  # the user switched approvals off
+        if store.get_settings().get("bypass_approvals") or self.auto_approve:  # approvals switched off
             self.bypassed.add(call_id)
-            self.emit("approval_bypassed", path=path, call_id=call_id, name=name)
+            self.emit("approval_bypassed", path=path, call_id=call_id, name=name,
+                      reason="run" if self.auto_approve else "settings")
             return True
         approval_id = store.new_id()
         fut = asyncio.get_running_loop().create_future()
@@ -173,25 +185,32 @@ class Run:
         self.emit("approval", path=path, approval_id=approval_id, call_id=call_id, name=name, args=args)
         self.publish()
         try:
-            approved = await fut
+            approved, everything = await fut
         finally:
             self.approvals.pop(approval_id, None)
-        self.emit("approval_done", path=path, approval_id=approval_id, call_id=call_id, approved=approved)
+        if approved and everything:
+            self.auto_approve = True
+        self.emit("approval_done", path=path, approval_id=approval_id, call_id=call_id, approved=approved,
+                  **({"all": True} if approved and everything else {}))
         self.publish()
         return approved
 
 
 # ------------------------------------------------------------ message prep
 
-def add_user_message(chat: dict, agent: dict, content: str) -> None:
+def add_user_message(chat: dict, agent: dict, content: str, images: list[str] | None = None) -> None:
     if agent["memory"] and "memory_profile" not in chat:
         chat["memory_profile"] = memory.profile()  # fixed for this chat, so the prompt cache stays valid
     if content:
         recall = memory.recall_block(content, chat["memory_profile"]["ids"]) if agent["memory"] else ""
-        chat["messages"].append({"role": "user", "content": content, "_recall": recall})
+        msg = {"role": "user", "content": content, "_recall": recall, "_ts": time.time()}
+        if images:
+            msg["_images"] = [str(p) for p in images][:MAX_IMAGES]
+        chat["messages"].append(msg)
         if chat["title"] == "New chat":
             first_line = content.splitlines()[0]
             chat["title"] = first_line[:60] + ("…" if len(first_line) > 60 else "")
+            chat["title_auto"] = True  # the model may give it a better name after the first reply
 
 
 def contactable(agent: dict, chain: list[str]) -> list[dict]:
@@ -244,6 +263,16 @@ def system_prompt(agent: dict, caller: dict | None, contacts: list[dict], chat: 
                    "will continue this conversation where you left off.")
     parts.append("\n\n".join(ctx))
     return "\n\n".join(p for p in parts if p)
+
+
+def preview_prompt(agent: dict) -> dict:
+    """The system prompt and tools a fresh chat with this agent would start with (for the editor)."""
+    contacts = contactable(agent, [agent["id"]])
+    chat = {"memory_profile": memory.profile()} if agent["memory"] else {}
+    schemas = agent_tools(agent, contacts)
+    return {"system_prompt": system_prompt(agent, None, contacts, chat),
+            "tools": [t["function"]["name"] for t in schemas],
+            "contacts": [a["name"] for a in contacts]}
 
 
 def truncate(chat: dict, from_index: int) -> None:
@@ -359,6 +388,7 @@ async def agent_loop(run: Run, agent: dict, chat: dict, *, depth: int, path: lis
             comp = await _complete(run, agent, chat, system(), schemas, path, save, settings, retry=False)
 
         msg = comp.message()
+        msg["_ts"] = time.time()
         stats = comp.stats()
         if stats:
             msg["_stats"] = stats
@@ -415,8 +445,9 @@ async def agent_loop(run: Run, agent: dict, chat: dict, *, depth: int, path: lis
 async def _complete(run: Run, agent: dict, chat: dict, sys_msg: dict, schemas: list, path: list, save,
                     settings: dict, retry: bool = True) -> llm.Completion | None:
     """Stream one reply. Returns None if the server rejected the prompt as too long (and retry is allowed)."""
-    payload = [sys_msg] + history.payload(chat, agent["memory"])
+    payload = [sys_msg] + history.payload(chat, agent["memory"], images=True)
     chars = history.size(payload, schemas)
+    n_images = inline_images(payload, tools.workspace_for(agent))  # after measuring: base64 isn't context
     comp = llm.Completion()
     shown = time.monotonic()
 
@@ -435,9 +466,21 @@ async def _complete(run: Run, agent: dict, chat: dict, sys_msg: dict, schemas: l
             show_context(run, chat, path, live_tokens())
 
     run.emit("assistant_start", path=path, agent_id=agent["id"])
+    await run.context_size()  # also learns whether the server is llama-server
     try:
-        await llm.stream_chat(client, settings, model=agent["model"], messages=payload, tools=schemas,
-                              temperature=agent["temperature"], out=comp, on_delta=on_delta)
+        try:
+            await llm.stream_chat(client, settings, model=agent["model"], messages=payload, tools=schemas,
+                                  temperature=agent["temperature"], out=comp, on_delta=on_delta, llama=run.llama)
+        except llm.LLMError as e:
+            if not (n_images and is_image_error(e)):
+                raise
+            # the model can't see images: send the text alone rather than failing the whole turn
+            run.emit("notice", path=path, text="This model can't take images, so the attached image was left out "
+                                               "(its file is still in the workspace).")
+            strip_images(payload)
+            comp = llm.Completion()
+            await llm.stream_chat(client, settings, model=agent["model"], messages=payload, tools=schemas,
+                                  temperature=agent["temperature"], out=comp, on_delta=on_delta, llama=run.llama)
     except asyncio.CancelledError:
         if comp.content or comp.reasoning:
             partial = comp.message()
@@ -452,6 +495,44 @@ async def _complete(run: Run, agent: dict, chat: dict, sys_msg: dict, schemas: l
         raise
     history.calibrate(chat, chars, (comp.usage or {}).get("prompt_tokens"))
     return comp
+
+
+def inline_images(payload: list[dict], ws) -> int:
+    """Replace `attach://<path>` image parts (see history.to_llm) with data URLs read from the workspace.
+    Images that are missing or too big are dropped. Returns how many images were inlined."""
+    n = 0
+    for m in payload:
+        if not isinstance(m.get("content"), list):
+            continue
+        parts = []
+        for part in m["content"]:
+            url = (part.get("image_url") or {}).get("url", "") if part.get("type") == "image_url" else ""
+            if not url.startswith("attach://"):
+                parts.append(part)
+                continue
+            try:
+                target = tools._resolve(ws, url[len("attach://"):])
+                data = target.read_bytes()
+            except (tools.ToolError, OSError):
+                continue
+            mime = mimetypes.guess_type(target.name)[0] or "image/png"
+            if len(data) > MAX_IMAGE_BYTES or not mime.startswith("image/"):
+                continue
+            parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode()}"}})
+            n += 1
+        m["content"] = parts if n else "".join(p.get("text", "") for p in parts)
+    return n
+
+
+def strip_images(payload: list[dict]) -> None:
+    for m in payload:
+        if isinstance(m.get("content"), list):
+            m["content"] = "\n".join(p.get("text", "") for p in m["content"] if p.get("type") == "text")
+
+
+def is_image_error(err: Exception) -> bool:
+    text = str(err).lower()
+    return any(w in text for w in ("image", "multimodal", "mmproj", "vision", "content must be a string"))
 
 
 async def execute_tool(run: Run, agent: dict, tc: dict, *, depth: int, path: list, chain: list[str]):
@@ -497,9 +578,13 @@ async def execute_tool(run: Run, agent: dict, tc: dict, *, depth: int, path: lis
     if name in browser.SCHEMAS:
         return await browser.call(name, args, tools.workspace_for(agent)), None
 
+    async def progress(text: str) -> None:
+        run.emit("tool_progress", path=path, call_id=tc["id"], content=text)
+
     try:
         timeout = store.get_settings().get("shell_timeout", tools.SHELL_TIMEOUT)
-        return await tools.call(name, args, tools.workspace_for(agent), client, shell_timeout=timeout), None
+        return await tools.call(name, args, tools.workspace_for(agent), client, shell_timeout=timeout,
+                                on_progress=progress if name == "run_shell" else None), None
     except tools.ToolError as e:
         return f"Error: {e}", None
     except asyncio.CancelledError:
@@ -615,6 +700,7 @@ async def _run_top(run: Run, agent: dict, mode: str) -> None:
         chat["messages"].append({"role": "assistant", "content": "", "_error": str(e)})
         run.emit("error", message=str(e))
     except Exception as e:  # keep the server alive and tell the user
+        log.exception("run of chat %s failed", chat["id"])
         msg = f"Internal error: {type(e).__name__}: {e}"
         chat["messages"].append({"role": "assistant", "content": "", "_error": msg})
         run.emit("error", message=msg)
@@ -632,21 +718,69 @@ async def _run_top(run: Run, agent: dict, mode: str) -> None:
         run.emit("done", chat=chat, ts=time.time())
         broadcast({"type": "chat_status", "chat_id": chat["id"], "status": "idle"})
         broadcast({"type": "chats_changed"})
-        if ok and agent["memory"] and store.get_settings().get("auto_memory", True):
-            schedule_extraction(chat["id"], agent)
+        if ok:
+            schedule_background(chat["id"], agent)
 
 
-# ------------------------------------------------------- memory extraction
+# ------------------------------------- background work: chat titles, memory extraction
 
 def cancel_extraction() -> None:
     if memory_task and not memory_task.done():
         memory_task.cancel()
 
 
-def schedule_extraction(chat_id: str, agent: dict) -> None:
+def schedule_background(chat_id: str, agent: dict) -> None:
+    """After a turn, while the model is idle: name the chat, then review the turn for memories.
+    Any new run cancels this (real requests always win the single model slot)."""
     global memory_task
     cancel_extraction()
-    memory_task = asyncio.create_task(_extract(chat_id, agent))
+    memory_task = asyncio.create_task(_background(chat_id, agent))
+
+
+async def _background(chat_id: str, agent: dict) -> None:
+    await asyncio.sleep(1.5)
+    if runs:
+        return  # the model is busy; the next finished turn picks this up
+    settings = store.get_settings()
+    if settings.get("auto_title", True):
+        await _title(chat_id, agent)
+    if agent["memory"] and settings.get("auto_memory", True):
+        await _extract(chat_id, agent)
+
+
+async def _title(chat_id: str, agent: dict) -> None:
+    """Give the chat a short model-written title after its first reply (unless the user renamed it)."""
+    chat = store.get_chat(chat_id)
+    if not chat or not chat.get("title_auto") or chat.get("parent"):
+        return
+    msgs = [m for m in chat["messages"] if m["role"] in ("user", "assistant") and m.get("content") and not m.get("_error")]
+    first_user = next((m for m in msgs if m["role"] == "user"), None)
+    first_reply = next((m for m in msgs if m["role"] == "assistant"), None)
+    if not first_user or not first_reply:
+        return
+    excerpt = f"USER:\n{first_user['content'][:1500]}\n\nASSISTANT:\n{first_reply['content'][:1500]}"
+    comp = llm.Completion()
+
+    async def ignore(kind: str, text: str, meta: dict | None = None) -> None:
+        pass
+
+    try:
+        await llm.stream_chat(client, store.get_settings(), model=agent["model"], tools=None, temperature=None,
+                              messages=[{"role": "system", "content": TITLE_PROMPT}, {"role": "user", "content": excerpt}],
+                              out=comp, on_delta=ignore, llama=False)
+    except llm.LLMError:
+        return
+    title = comp.content.strip().splitlines()[0].strip().strip('"\'“”').rstrip(".") if comp.content.strip() else ""
+    if len(title.split()) > 8:
+        title = " ".join(title.split()[:8])
+    chat = store.get_chat(chat_id)
+    if not title or not chat or not chat.get("title_auto") or chat_id in views:
+        return
+    chat["title"] = title[:120]
+    chat["title_auto"] = False
+    store.save_chat(chat)
+    broadcast({"type": "chat_title", "chat_id": chat_id, "title": chat["title"]})
+    broadcast({"type": "chats_changed"})
 
 
 def _excerpt(messages: list[dict], limit: int = 12000) -> str:
@@ -673,7 +807,7 @@ async def tidy_memory() -> str:
             pass
 
         await llm.stream_chat(client, store.get_settings(), model="", tools=None, temperature=None,
-                              messages=request, out=comp, on_delta=ignore)
+                              messages=request, out=comp, on_delta=ignore, llama=False)
         changes = memory.apply_extraction(comp.content, source="tidy")
         broadcast({"type": "memory_changed", "by": "tidy", **changes})
         return (f"Tidied: {len(changes['updated'])} updated, {len(changes['deleted'])} removed."
@@ -684,9 +818,6 @@ async def tidy_memory() -> str:
 
 async def _extract(chat_id: str, agent: dict) -> None:
     """Review the turns since the last extraction and update memory. Cancelled by any new run."""
-    await asyncio.sleep(1.5)
-    if runs:
-        return  # the model is busy; the next finished turn will pick these messages up too
     chat = store.get_chat(chat_id)
     if not chat:
         return
@@ -702,7 +833,7 @@ async def _extract(chat_id: str, agent: dict) -> None:
             pass
 
         await llm.stream_chat(client, store.get_settings(), model=agent["model"], tools=None, temperature=None,
-                              messages=memory.extraction_request(_excerpt(new)), out=comp, on_delta=ignore)
+                              messages=memory.extraction_request(_excerpt(new)), out=comp, on_delta=ignore, llama=False)
         changes = memory.apply_extraction(comp.content, source=f"auto:{chat_id}")
         chat = store.get_chat(chat_id)
         if chat and chat_id not in views:

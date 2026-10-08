@@ -5,6 +5,7 @@ Then point Settings → Model server URL at http://127.0.0.1:8766/v1
 
 Behaviour is keyed off the last user message:
   "shell: <cmd>"   -> calls run_shell
+  "shell twice: <cmd>" -> calls run_shell, then again with "<cmd> again" (two approvals in one run)
   "write: <text>"  -> calls write_file notes.txt
   "delegate"       -> calls ask_agent(Coder, "shell: echo hello from coder")
   "qa"             -> Orchestrator asks Coder to build something; Coder answers with a
@@ -59,6 +60,16 @@ async def props():
 async def completions(request: Request):
     body = await request.json()
     msgs = body["messages"]
+    for m in msgs:  # vision-style content parts: keep the text, note the images
+        if isinstance(m.get("content"), list):
+            imgs = [p for p in m["content"] if p.get("type") == "image_url"]
+            text = "".join(p.get("text", "") for p in m["content"] if p.get("type") == "text")
+            if imgs and not all(p["image_url"]["url"].startswith("data:image/") for p in imgs):
+                return JSONResponse({"error": {"message": "bad image part"}}, 400)
+            m["content"] = text + (f" [+{len(imgs)} image(s)]" if imgs else "")
+    if os.environ.get("MOCK_NO_VISION") and any("[+" in str(m.get("content")) for m in msgs):
+        return JSONResponse({"error": {"code": 400, "type": "invalid_request_error",
+                             "message": "image input is not supported - hint: if this is unexpected, you may need to provide the mmproj"}}, 400)
     last = msgs[-1]
     tools = {t["function"]["name"] for t in body.get("tools") or []}
     agent = (re.search(r"You are the (\w+) agent", msgs[0]["content"]) or [None, "?"])[1]
@@ -69,6 +80,7 @@ async def completions(request: Request):
                              "message": "the request exceeds the available context size, try increasing it"}}, 400)
     summarizing = msgs[0]["content"].startswith("You compress conversations")
     extracting = msgs[0]["content"].startswith("You maintain long-term memory")
+    titling = msgs[0]["content"].startswith("You name conversations")
 
     async def gen():
         delay = 0.004
@@ -107,6 +119,9 @@ async def completions(request: Request):
                 add.append({"fact": f"The user prefers {m[1].strip()}", "category": "preference", "importance": 7})
             reasoning, text = "Look for durable facts.", json.dumps({"add": add, "update": [], "delete": []})
             await asyncio.sleep(0.3)
+        elif titling:
+            first = last["content"].split("USER:\n", 1)[-1].split("\n", 1)[0]
+            reasoning, text = "Pick a title.", "Titled: " + " ".join(first.split()[:3]).rstrip(".,!?")
         elif summarizing:
             reasoning = "Summarize the transcript."
             text = f"## Summary\n- Earlier transcript had {last['content'].count('ASSISTANT:')} assistant turns.\n- The user wants big replies."
@@ -118,6 +133,10 @@ async def completions(request: Request):
         elif last["role"] == "tool" and agent == "Orchestrator" and "QUESTION" in last["content"]:
             reasoning, text = "Coder asked which language. Answer it.", ""
             tool = ("ask_agent", {"agent": "Coder", "message": "Use Python."})
+        elif (last["role"] == "tool" and "run_shell" in tools and history.split(" | ")[-1].startswith("shell twice:")
+              and sum(m["role"] == "tool" for m in msgs) < 2):
+            reasoning, text = "Once more.", ""
+            tool = ("run_shell", {"command": history.split(" | ")[-1][len("shell twice:"):].strip() + " again"})
         elif last["role"] == "tool":
             text = f"Finished. The tool returned:\n\n```\n{last['content'][:200]}\n```"
             reasoning = "The tool ran; summarise the result."
@@ -151,6 +170,8 @@ async def completions(request: Request):
             elif user.startswith("what is my name"):
                 m = re.search(r"The user's name is (\w+)", msgs[0]["content"])
                 text = f"Your name is {m[1]}." if m else "I don't know your name."
+            elif user.startswith("describe the image"):
+                text = "I see " + (re.search(r"\[\+(\d+) image", user) or [None, "no"])[1] + " image(s)."
             elif user.startswith("what do you recall"):
                 text = "Recall block: " + (user.split("[From your memory of the user, possibly relevant]")[-1].strip()
                                            if "[From your memory" in user else "none")
@@ -165,6 +186,10 @@ async def completions(request: Request):
                 tool = ("ask_agent", {"agent": "Coder", "message": "call your boss"})
             elif user == "call your boss" and "ask_agent" in tools:
                 tool = ("ask_agent", {"agent": "Orchestrator", "message": "hi boss"})
+            elif user.startswith("slow shell") and "run_shell" in tools:
+                tool = ("run_shell", {"command": "for i in 1 2 3 4; do echo tick$i; sleep 0.4; done"})
+            elif user.startswith("shell twice:") and "run_shell" in tools:
+                tool = ("run_shell", {"command": user[len("shell twice:"):].strip()})
             elif user.startswith("shell:") and "run_shell" in tools:
                 tool = ("run_shell", {"command": user[6:].strip()})
             elif user.startswith("write:") and "write_file" in tools:

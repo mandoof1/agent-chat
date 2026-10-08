@@ -5,6 +5,7 @@ import itertools
 import os
 import re
 import signal
+import time
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -15,6 +16,8 @@ from .store import DEFAULT_WORKSPACE, get_settings
 
 MAX_READ = 60_000
 MAX_OUTPUT = 20_000
+MAX_FETCH = 2_000_000  # bytes of a web page web_fetch will download
+PROGRESS_EVERY = 0.5   # seconds between live-output updates while a shell command runs
 SHELL_TIMEOUT = 180  # default; Settings → "Shell command timeout" (0 = no limit)
 UA = "Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0"
 
@@ -223,7 +226,9 @@ def edit_file(ws: Path, path: str, old_text: str, new_text: str) -> str:
 
 
 async def run_shell(ws: Path, command: str, timeout: float | None = SHELL_TIMEOUT,
-                    background: bool = False) -> str:
+                    background: bool = False, on_progress=None) -> str:
+    """Run `command`. `on_progress(text)` (async) is called every PROGRESS_EVERY seconds with the
+    output so far, so the UI can show a long command's output while it runs."""
     # Output goes to a file, not a PIPE. communicate() on a PIPE waits for the write end to close,
     # but a backgrounded child inherits that fd and holds it open, so communicate() would hang
     # forever (especially with the timeout set to 0). Waiting on the process itself and reading a
@@ -247,7 +252,21 @@ async def run_shell(ws: Path, command: str, timeout: float | None = SHELL_TIMEOU
                 stderr=asyncio.subprocess.STDOUT, start_new_session=True,
             )
         try:
-            await asyncio.wait_for(proc.wait(), timeout or None)  # 0/None: wait as long as it takes
+            waiter = asyncio.ensure_future(proc.wait())
+            deadline = time.monotonic() + timeout if timeout else None  # 0/None: wait as long as it takes
+            while True:
+                left = None if deadline is None else deadline - time.monotonic()
+                if left is not None and left <= 0:
+                    waiter.cancel()
+                    raise asyncio.TimeoutError
+                wait = PROGRESS_EVERY if on_progress else left
+                if left is not None and wait is not None:
+                    wait = min(wait, left)
+                done, _ = await asyncio.wait({waiter}, timeout=wait)
+                if done:
+                    break
+                if on_progress:
+                    await on_progress(_clip(out_file.read_bytes().decode(errors="replace")))
             out = out_file.read_bytes().decode(errors="replace")
             return f"exit code {proc.returncode}\n{_clip(out)}"
         except asyncio.TimeoutError:
@@ -338,22 +357,34 @@ async def web_search(client: httpx.AsyncClient, query: str) -> str:
 async def web_fetch(client: httpx.AsyncClient, url: str) -> str:
     if urlparse(url).scheme not in ("http", "https"):
         raise ToolError("Only http(s) URLs are supported")
-    r = await client.get(url, headers={"User-Agent": UA}, timeout=30, follow_redirects=True)
-    ctype = r.headers.get("content-type", "")
-    if r.status_code >= 400:
-        return f"HTTP {r.status_code} fetching {url}"
+    async with client.stream("GET", url, headers={"User-Agent": UA}, timeout=30, follow_redirects=True) as r:
+        ctype = r.headers.get("content-type", "")
+        if r.status_code >= 400:
+            return f"HTTP {r.status_code} fetching {url}"
+        if not ("html" in ctype or ctype.startswith("text/") or "json" in ctype or "xml" in ctype):
+            return f"Fetched {url} but it is not text ({ctype or 'unknown type'})."
+        chunks, size, truncated = [], 0, False
+        async for chunk in r.aiter_bytes():
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > MAX_FETCH:  # don't read a huge file into memory; the clip below drops the rest anyway
+                truncated = True
+                break
+        raw = b"".join(chunks)
+        final_url = r.url
+    text = raw.decode(r.encoding or "utf-8", errors="replace")
     if "html" in ctype:
         parser = _TextExtractor()
-        parser.feed(r.text)
+        parser.feed(text)
         body = f"# {parser.title.strip()}\n\n{parser.text()}" if parser.title.strip() else parser.text()
-    elif ctype.startswith("text/") or "json" in ctype or "xml" in ctype:
-        body = r.text
     else:
-        return f"Fetched {url} but it is not text ({ctype or 'unknown type'}, {len(r.content)} bytes)."
-    return f"URL: {r.url}\n\n{_clip(body, 30_000)}"
+        body = text
+    note = f"\n\n[page truncated at {MAX_FETCH // 1_000_000} MB]" if truncated else ""
+    return f"URL: {final_url}\n\n{_clip(body, 30_000)}{note}"
 
 
-async def call(name: str, args: dict, ws: Path, client: httpx.AsyncClient, shell_timeout: float | None = SHELL_TIMEOUT) -> str:
+async def call(name: str, args: dict, ws: Path, client: httpx.AsyncClient, shell_timeout: float | None = SHELL_TIMEOUT,
+               on_progress=None) -> str:
     try:
         if name == "list_dir":
             return list_dir(ws, args.get("path") or ".")
@@ -364,7 +395,7 @@ async def call(name: str, args: dict, ws: Path, client: httpx.AsyncClient, shell
         if name == "edit_file":
             return edit_file(ws, args["path"], args["old_text"], args["new_text"])
         if name == "run_shell":
-            return await run_shell(ws, args["command"], shell_timeout, bool(args.get("background")))
+            return await run_shell(ws, args["command"], shell_timeout, bool(args.get("background")), on_progress)
         if name == "web_search":
             return await web_search(client, args["query"])
         if name == "web_fetch":

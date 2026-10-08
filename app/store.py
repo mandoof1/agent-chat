@@ -6,6 +6,7 @@ Everything lives under data/ so it is easy to back up or hand-edit:
   data/chats/<id>.json
 """
 
+import copy
 import json
 import os
 import re
@@ -31,6 +32,7 @@ DEFAULT_SETTINGS = {
     "compact_at": 70,      # % of the context window at which older messages get summarized
     "context_size": 0,     # 0 = ask the server (llama-server reports it); set it for other servers
     "auto_memory": True,   # after each reply, let the model save new facts about the user
+    "auto_title": True,    # after the first reply, let the model name the chat
     "bypass_approvals": False,  # run shell commands and send email without asking
     "search_url": "",      # SearXNG base URL for web_search (JSON API); empty = scrape DuckDuckGo
     "browser_headless": True,              # Browser agent: run Brave headless (True) or visible (False)
@@ -51,7 +53,9 @@ AGENT_FIELDS = {
     "workspace": "",
     "confirm_shell": True,
     "memory": True,        # sees the user profile + relevant memories, and can remember/forget
+    "order": None,         # position in the rail (None = after the starter agents, by name)
 }
+STARTER_ORDER = ["assistant", "mail", "planner", "orchestrator", "coder", "researcher", "browser", "writer", "reviewer"]
 
 
 def new_id() -> str:
@@ -113,14 +117,28 @@ def normalize_agent(data: dict) -> dict:
     agent["name"] = (agent["name"] or "Agent").strip()
     agent["tools"] = [t for t in agent["tools"] if isinstance(t, str)]
     agent["delegates"] = [d for d in agent["delegates"] if isinstance(d, str) and d != agent["id"]]
+    agent["order"] = int(agent["order"]) if isinstance(agent["order"], (int, float)) else None
     return agent
 
 
 def list_agents() -> list[dict]:
     agents = [_read(p) for p in sorted(AGENTS.glob("*.json"))]
     agents = [normalize_agent(a) for a in agents if a]
-    order = {a: i for i, a in enumerate(["assistant", "mail", "planner", "orchestrator", "coder", "researcher", "browser", "writer", "reviewer"])}
-    return sorted(agents, key=lambda a: (order.get(a["id"], 99), a["name"].lower()))
+    default = {a: i for i, a in enumerate(STARTER_ORDER)}
+    # agents the user has arranged by hand come first, in that order; the rest keep the starter order
+    return sorted(agents, key=lambda a: (a["order"] is None, a["order"] or 0, default.get(a["id"], 99), a["name"].lower()))
+
+
+def reorder_agents(ids: list[str]) -> list[dict]:
+    """Give every agent a position: the listed ids in that order, then the rest as they were."""
+    current = list_agents()
+    rank = {aid: i for i, aid in enumerate(ids)}
+    rest = [a["id"] for a in current if a["id"] not in rank]
+    for i, aid in enumerate(list(rank) + rest):
+        agent = get_agent(aid)
+        if agent and agent["order"] != i:
+            save_agent(agent | {"order": i})
+    return list_agents()
 
 
 def get_agent(agent_id: str) -> dict | None:
@@ -177,16 +195,56 @@ def chat_summary(chat: dict) -> dict:
         if m.get("role") in ("user", "assistant") and m.get("content"):
             preview = m["content"][:120]
             break
-    return {k: chat.get(k) for k in ("id", "title", "agent_id", "created", "updated", "parent")} | {"preview": preview}
+    msgs = chat.get("messages", [])
+    return ({k: chat.get(k) for k in ("id", "title", "agent_id", "created", "updated", "parent", "routine_id")}
+            | {"preview": preview, "pinned": bool(chat.get("pinned")), "messages": len(msgs),
+               "last_role": msgs[-1]["role"] if msgs else None,
+               "last_ts": msgs[-1].get("_ts") if msgs else None})
+
+
+_summary_cache: dict[str, tuple[int, float, dict]] = {}  # path -> (size, mtime, summary)
 
 
 def list_chats() -> list[dict]:
-    chats = []
+    """Summaries of every chat, newest first. Reads only the files that changed since last time."""
+    chats, seen = [], set()
     for p in CHATS.glob("*.json"):
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        key = str(p)
+        seen.add(key)
+        hit = _summary_cache.get(key)
+        if hit and hit[0] == st.st_size and hit[1] == st.st_mtime:
+            chats.append(hit[2])
+            continue
         chat = _read(p)
         if chat:
-            chats.append(chat_summary(chat))
-    return sorted(chats, key=lambda c: c["updated"] or 0, reverse=True)
+            summary = chat_summary(chat)
+            _summary_cache[key] = (st.st_size, st.st_mtime, summary)
+            chats.append(summary)
+    for key in list(_summary_cache):
+        if key not in seen:
+            del _summary_cache[key]
+    return sorted(chats, key=lambda c: (c["pinned"], c["updated"] or 0), reverse=True)
+
+
+def fork_chat(chat: dict, upto: int) -> dict:
+    """A new chat with the first `upto` messages of `chat` (agent-to-agent threads are not copied)."""
+    now = time.time()
+    fork = copy.deepcopy(chat)
+    fork.update({"id": new_id(), "created": now, "updated": now, "messages": fork["messages"][:upto],
+                 "title": f"{chat['title']} (branch)"[:120], "pinned": False})
+    for key in ("parent", "routine_id", "subchats", "threads", "memory_upto", "auto_title"):
+        fork.pop(key, None)
+    comps = fork.get("compactions") or []
+    while comps and comps[-1]["upto"] > upto:
+        comps.pop()
+    for m in fork["messages"]:
+        m.pop("_sub", None)
+    _write(CHATS / f"{fork['id']}.json", fork)
+    return fork
 
 
 def search_chats(query: str, limit: int = 40) -> list[dict]:

@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import logging
+import mimetypes
 import os
 import time
 from contextlib import asynccontextmanager, suppress
@@ -17,6 +19,8 @@ from pydantic import BaseModel
 from . import agenda, browser, llm, mail, memory, routines, runner, store, tools
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
+VERSION = "0.2.0"
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
 @asynccontextmanager
@@ -91,10 +95,15 @@ def _need_agent(agent_id: str) -> dict:
 
 # ------------------------------------------------------------------- state
 
+@app.get("/api/health")
+async def health():
+    return {"ok": True, "version": VERSION, "runs": len(runner.runs)}
+
+
 @app.get("/api/state")
 async def state():
     return {"agents": store.list_agents(), "chats": await chats(), "settings": store.get_settings(),
-            "tools": tools.TOOL_INFO, "default_workspace": str(store.DEFAULT_WORKSPACE)}
+            "tools": tools.TOOL_INFO, "default_workspace": str(store.DEFAULT_WORKSPACE), "version": VERSION}
 
 
 @app.get("/api/chats")
@@ -137,6 +146,7 @@ class SettingsIn(BaseModel):
     compact_at: int | None = None
     context_size: int | None = None
     auto_memory: bool | None = None
+    auto_title: bool | None = None
     bypass_approvals: bool | None = None
     search_url: str | None = None
     browser_headless: bool | None = None
@@ -164,6 +174,17 @@ class AgentIn(BaseModel):
     workspace: str = ""
     confirm_shell: bool = True
     memory: bool = True
+    order: int | None = None
+
+
+class OrderIn(BaseModel):
+    ids: list[str]
+
+
+@app.put("/api/agents/order")
+async def order_agents(body: OrderIn):
+    """Arrange the rail: the given ids in this order, everything else after them."""
+    return store.reorder_agents([i for i in body.ids if store.get_agent(i)])
 
 
 @app.post("/api/agents")
@@ -171,10 +192,19 @@ async def create_agent(body: AgentIn):
     return store.save_agent(body.model_dump() | {"id": store.new_id()})
 
 
+@app.get("/api/agents/{agent_id}/prompt")
+async def agent_prompt(agent_id: str):
+    """What a fresh chat with this agent starts with: the composed system prompt and its tool list."""
+    return runner.preview_prompt(_need_agent(agent_id))
+
+
 @app.put("/api/agents/{agent_id}")
 async def update_agent(agent_id: str, body: AgentIn):
-    _need_agent(agent_id)
-    return store.save_agent(body.model_dump() | {"id": agent_id})
+    current = _need_agent(agent_id)
+    data = body.model_dump()
+    if data.get("order") is None:
+        data["order"] = current["order"]  # the editor doesn't manage positions; keep the rail order
+    return store.save_agent(data | {"id": agent_id})
 
 
 @app.delete("/api/agents/{agent_id}")
@@ -193,11 +223,21 @@ class ChatIn(BaseModel):
 class ChatPatch(BaseModel):
     title: str | None = None
     agent_id: str | None = None
+    pinned: bool | None = None
 
 
 class RunIn(BaseModel):
     content: str | None = None
     from_index: int | None = None  # truncate history here first (edit / regenerate)
+    images: list[str] = []         # workspace paths of attached images (from /upload), for vision models
+
+
+class ForkIn(BaseModel):
+    upto: int  # keep messages[:upto]
+
+
+class IdsIn(BaseModel):
+    ids: list[str]
 
 
 @app.post("/api/chats")
@@ -215,12 +255,37 @@ async def patch_chat(chat_id: str, body: ChatPatch):
         raise HTTPException(409, "chat is busy")
     if body.title is not None:
         chat["title"] = body.title.strip()[:120] or "Untitled"
+        chat["title_auto"] = False  # a name the user chose is never replaced by the model's
     if body.agent_id is not None:
         _need_agent(body.agent_id)
         chat["agent_id"] = body.agent_id
+    if body.pinned is not None:
+        chat["pinned"] = body.pinned
     store.save_chat(chat)
     runner.broadcast({"type": "chats_changed"})
     return store.chat_summary(chat)
+
+
+@app.post("/api/chats/{chat_id}/fork")
+async def fork_chat(chat_id: str, body: ForkIn):
+    """Branch: a new chat with the first `upto` messages, to try a different continuation."""
+    chat = _need_chat(chat_id)
+    if chat.get("parent"):
+        raise HTTPException(400, "an agent's work for another agent can't be branched; branch the chat that started it")
+    if not 0 < body.upto <= len(chat["messages"]):
+        raise HTTPException(400, "upto out of range")
+    fork = store.fork_chat(chat, body.upto)
+    runner.broadcast({"type": "chats_changed"})
+    return store.chat_summary(fork)
+
+
+@app.post("/api/chats/delete")
+async def delete_chats(body: IdsIn):
+    """Delete several chats at once (busy chats are stopped first)."""
+    for chat_id in body.ids:
+        if store.get_chat(chat_id):
+            await delete_chat(chat_id)
+    return {"ok": True, "deleted": len(body.ids)}
 
 
 @app.delete("/api/chats/{chat_id}")
@@ -262,7 +327,7 @@ async def run_chat(chat_id: str, body: RunIn):
         if not 0 <= body.from_index <= len(chat["messages"]):
             raise HTTPException(400, "from_index out of range")
         runner.truncate(chat, body.from_index)
-    runner.add_user_message(chat, agent, content)
+    runner.add_user_message(chat, agent, content, body.images)
     if not chat["messages"] or chat["messages"][-1]["role"] not in ("user", "tool"):
         raise HTTPException(400, "nothing to answer: send a message first")
     store.save_chat(chat)
@@ -304,6 +369,7 @@ async def stop_chat(chat_id: str):
 
 class ApprovalIn(BaseModel):
     approve: bool
+    all: bool = False  # approve everything else this run asks for, too
 
 
 @app.post("/api/chats/{chat_id}/approvals/{approval_id}")
@@ -312,7 +378,7 @@ async def approve(chat_id: str, approval_id: str, body: ApprovalIn):
     fut = view.run.approvals.get(approval_id) if view else None
     if not fut or fut.done():
         raise HTTPException(404, "no pending approval with that id")
-    fut.set_result(body.approve)
+    fut.set_result((body.approve, body.all))
     return {"ok": True}
 
 
@@ -340,13 +406,17 @@ async def upload(chat_id: str, request: Request, name: str):
         n += 1
     target.write_bytes(data)
     text = None
-    try:
-        decoded = data.decode("utf-8")
-        if "\x00" not in decoded and len(decoded) <= INLINE_TEXT:
-            text = decoded
-    except UnicodeDecodeError:
-        pass
-    return {"name": target.name, "path": f"uploads/{target.name}", "size": len(data), "text": text}
+    mime = mimetypes.guess_type(target.name)[0] or ""
+    image = mime.startswith("image/") and (data[:4] in (b"\x89PNG", b"GIF8", b"RIFF") or data[:3] == b"\xff\xd8\xff")
+    if not image:
+        try:
+            decoded = data.decode("utf-8")
+            if "\x00" not in decoded and len(decoded) <= INLINE_TEXT:
+                text = decoded
+        except UnicodeDecodeError:
+            pass
+    return {"name": target.name, "path": f"uploads/{target.name}", "size": len(data), "text": text, "image": bool(image),
+            "agent_id": agent.get("id")}
 
 
 @app.get("/api/chats/{chat_id}/export.md")
@@ -354,6 +424,7 @@ async def export_chat(chat_id: str):
     chat = _need_chat(chat_id)
     agent = store.get_agent(chat["agent_id"]) or {"name": "Deleted agent"}
     lines = [f"# {chat['title']}", "", f"Agent: {agent['name']}", ""]
+    results = {m.get("tool_call_id"): m for m in chat["messages"] if m.get("role") == "tool"}
     for m in chat["messages"]:
         if m["role"] == "user":
             heading = "## Request" if chat.get("parent") else "## You (while it worked)" if m.get("_queued") else "## You"
@@ -366,9 +437,77 @@ async def export_chat(chat_id: str):
                 lines += [f"## {agent['name']}", "", m["content"], ""]
             for tc in m.get("tool_calls") or []:
                 lines += [f"*Used `{tc['function']['name']}`*", ""]
-    filename = "".join(c if c.isalnum() else "-" for c in chat["title"])[:60].strip("-") or "chat"
+                res = results.get(tc["id"])
+                if res and res.get("content") and tc["function"]["name"] != "ask_agent":
+                    body = str(res["content"])
+                    body = body if len(body) <= 2000 else body[:2000] + "\n…"
+                    lines += ["<details><summary>Result</summary>", "", "```", body, "```", "", "</details>", ""]
     return PlainTextResponse("\n".join(lines), media_type="text/markdown",
-                             headers={"Content-Disposition": f'attachment; filename="{filename}.md"'})
+                             headers={"Content-Disposition": f'attachment; filename="{_export_name(chat)}.md"'})
+
+
+def _export_name(chat: dict) -> str:
+    return "".join(c if c.isalnum() else "-" for c in chat["title"])[:60].strip("-") or "chat"
+
+
+@app.get("/api/chats/{chat_id}/export.json")
+async def export_chat_json(chat_id: str):
+    """The chat as stored, plus the agent-to-agent conversations it started."""
+    chat = _need_chat(chat_id)
+    subchats = [s for s in (store.get_chat(i) for i in chat.get("subchats") or []) if s]
+    data = {"version": VERSION, "exported": time.time(), "chat": chat, "subchats": subchats,
+            "agent": store.get_agent(chat["agent_id"])}
+    return JSONResponse(data, headers={"Content-Disposition": f'attachment; filename="{_export_name(chat)}.json"'})
+
+
+# --------------------------------------------------------------- workspace
+
+def _workspace_target(agent_id: str, path: str) -> tuple[Path, Path]:
+    agent = _need_agent(agent_id)
+    ws = tools.workspace_for(agent)
+    try:
+        return ws, tools._resolve(ws, path)
+    except tools.ToolError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/workspace")
+async def workspace_listing(agent_id: str, path: str = "."):
+    """The files in an agent's workspace folder (what its file and shell tools can see)."""
+    ws, target = _workspace_target(agent_id, path)
+    if not target.is_dir():
+        raise HTTPException(404, "not a folder")
+    entries = []
+    for p in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))[:1000]:
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        entries.append({"name": p.name, "dir": p.is_dir(), "size": st.st_size if p.is_file() else None,
+                        "mtime": st.st_mtime, "path": str(p.relative_to(ws))})
+    return {"workspace": str(ws), "path": str(target.relative_to(ws)) if target != ws else ".", "entries": entries}
+
+
+@app.get("/api/workspace/file")
+async def workspace_file(agent_id: str, path: str, download: bool = False):
+    ws, target = _workspace_target(agent_id, path)
+    if not target.is_file():
+        raise HTTPException(404, "no such file")
+    mime = mimetypes.guess_type(target.name)[0] or ("text/plain" if _looks_text(target) else "application/octet-stream")
+    if mime in ("text/html", "application/xhtml+xml", "image/svg+xml", "text/xml", "application/xml") and not download:
+        mime = "text/plain"  # an agent-written page must never run as a page on this origin (it could call the API)
+    headers = {"Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox"}
+    if download:
+        headers["Content-Disposition"] = f'attachment; filename="{target.name}"'
+    return FileResponse(target, media_type=mime, headers=headers)
+
+
+def _looks_text(path: Path) -> bool:
+    try:
+        head = path.read_bytes()[:4096]
+    except OSError:
+        return False
+    return b"\x00" not in head
 
 
 # ------------------------------------------------------------------- email
