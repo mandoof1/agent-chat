@@ -1,7 +1,7 @@
 // A chat: opening it, its header and stats, the rendered history, and the live view of a run.
 
 import { S, agentById, agentByName, APPROVAL_TEXT } from "./state.js";
-import { $, el, svgIcon, avatar, iconBtn, api, fmtK, oneLine, pkey, clock, renderMd, langFor, setCode, codeBlock, partialArgs, copyText } from "./util.js";
+import { $, el, svgIcon, avatar, iconBtn, api, fmtK, fmtSpan, oneLine, pkey, clock, renderMd, langFor, setCode, codeBlock, partialArgs, copyText } from "./util.js";
 import { toast, confirm, contextMenu, openImage } from "./ui.js";
 import { renderSidebar, markSeen, renameChat, togglePin } from "./sidebar.js";
 import { setRunning, renderQueue, applyChatMode, autoGrow, renderAttachments, fileUrl } from "./composer.js";
@@ -9,6 +9,7 @@ import { refreshFiles, filesChanged, openWorkspaceFile } from "./files.js";
 import { openAgentDialog } from "./agents.js";
 import { openSettings } from "./settings.js";
 import { setTitle } from "./notify.js";
+import { syncMenu } from "./commands.js";
 
 export const messagesEl = $("#messages");
 
@@ -55,9 +56,12 @@ export function openChat(id) {
   renderSidebar();
   $("#history").innerHTML = "";
   $("#live").innerHTML = "";
+  renderFoot();
+  $("#cmd-out").replaceChildren();  // a slash command's readout belongs to the chat it ran in
   if (!id) { setTitle(); refreshFiles(true); return; }
 
   $("#input").value = S.drafts[id] || "";
+  syncMenu();  // a menu open over the last chat's text must not run its command here
   S.attachments = [];
   renderAttachments();
   S.queue = [];
@@ -236,10 +240,11 @@ const fmtSecs = (s) => (s >= 60 ? `${Math.floor(s / 60)} min ${Math.round(s % 60
 function compactDivider(c) {
   const why = { auto: "automatically", manual: "on request", overflow: "because the context was full", cutoff: "because a reply filled the context" }[c.reason] || "";
   const size = c.before_tokens && c.after_tokens ? ` · ${fmtK(c.before_tokens)} → ${fmtK(c.after_tokens)} tokens` : "";
+  const keep = c.instructions ? ` · keeping ${oneLine(c.instructions, 60)}` : "";
   const body = el("div", { class: "md" });
   renderMd(body, c.summary, true);
-  return el("details", { class: "compact-divider" },
-    el("summary", {}, `Earlier messages summarized ${why}${size}`), body);
+  return el("details", { class: "compact-divider", "data-at": c.at },
+    el("summary", { title: c.instructions ? `Asked to keep: ${c.instructions}` : null }, `Earlier messages summarized ${why}${size}${keep}`), body);
 }
 
 // An error with a way out: retry the turn, or fix the server address.
@@ -522,7 +527,7 @@ function appendAssistant(container, m, results, index) {
     try { args = JSON.parse(tc.function.arguments || "{}"); } catch { args = { _raw: tc.function.arguments }; }
     const card = toolCard(tc.function.name, args, false);
     const res = results.get(tc.id);
-    if (res?._bypassed) card.markBypassed();
+    if (res?._bypassed) card.markBypassed(res._bypass_reason);
     if (res?._sub && card.subBody) {
       if (res._sub.continued) card.setContinued();
       card.setChat(res._sub.chat_id);
@@ -588,6 +593,46 @@ export function renderHistory(upTo) {
     t.body.append(el("div", { class: "md muted" }, a.purpose ? `Ready. My job: ${a.purpose}.` : "Ready when you are."));
     h.append(t.el);
   }
+  renderFoot();
+}
+
+// ------------------------------------------------------------------ footer
+// One quiet line after the last turn (and under a running one): how often the chat was compacted
+// and how long it has been going. /usage and /context say the same with the start time.
+
+const startedAt = (chat) => chat.created || chat.messages[0]?._ts || chat.updated;
+const compacted = (chat) => (chat.compactions?.length ? `compacted ${chat.compactions.length}×` : "not compacted yet");
+// A running time that keeps counting: the ticker below updates every element with data-since.
+const since = (ts) => el("span", { "data-since": ts }, fmtSpan(Date.now() / 1000 - ts));
+export const chatAge = (chat) => [`${compacted(chat)} · started ${clock(startedAt(chat))} (going for `, since(startedAt(chat)), ")"];
+
+export function renderFoot() {
+  const foot = $("#chat-foot");
+  foot.hidden = !S.chat?.messages.length;
+  if (foot.hidden) return foot.replaceChildren();
+  foot.replaceChildren(`${compacted(S.chat)} · going for `, since(startedAt(S.chat)));
+  foot.title = `Started ${new Date(startedAt(S.chat) * 1000).toLocaleString()}`;
+}
+setInterval(() => {
+  const now = Date.now() / 1000;
+  for (const n of document.querySelectorAll("[data-since]")) {
+    const t = fmtSpan(now - n.dataset.since);
+    if (n.textContent !== t) n.textContent = t;
+  }
+}, 1000);
+
+// A compaction mid-run: take the count from the chat as the server has it now (an edit or regenerate
+// can also shorten the list). A newer copy of the chat (run_start, done, a snapshot) wins over a late answer.
+let compSeq = 0;
+async function refreshCompactions() {
+  const chat = S.chat, seq = ++compSeq;
+  if (!chat) return;
+  try {
+    const fresh = await api("GET", `/api/chats/${chat.id}`);
+    if (S.chat !== chat || seq !== compSeq) return;
+    chat.compactions = fresh.compactions || [];
+    renderFoot();
+  } catch {}  // the chat is gone: its stream says so
 }
 
 export function userBubble(m, index, from = null) {
@@ -814,6 +859,7 @@ export function handleEvent(ev) {
   switch (ev.type) {
     case "snapshot":
       S.chat = ev.chat;
+      syncMenu();  // a menu opened before the chat arrived lists only what needs no chat
       renderHeader();
       renderHistory(ev.running ? ev.run_base : null);
       resetLive();
@@ -869,6 +915,11 @@ export function handleEvent(ev) {
       const c = liveContainer(ev.path);
       c?.compact?.el.replaceWith(compactDivider(ev.compaction));
       if (c) c.compact = null;
+      if (!ev.path?.length) {
+        // Joining mid-run, the snapshot's history already shows this one, and the replay just drew it again.
+        for (const d of $("#history").querySelectorAll(".compact-divider")) if (d.dataset.at === String(ev.compaction.at)) d.remove();
+        refreshCompactions();
+      }
       break;
     }
     case "approval": S.live?.cards.get(ev.call_id)?.askApproval(ev.approval_id); break;

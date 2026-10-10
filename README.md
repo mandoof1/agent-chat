@@ -48,7 +48,34 @@ Light theme, if you prefer it.
 
 ![The Planner in the light theme](docs/img/light.png)
 
-## Run
+## Install
+
+```bash
+curl -fsSL https://agent-chat-i4sv.onrender.com/install.sh | bash
+```
+
+That installs Agent Chat for your user (no sudo): the app in `~/.local/share/agent-chat/app`,
+your chats, memory and settings in `~/.local/share/agent-chat/data` (never touched by an
+update), and two commands in `~/.local/bin`. It installs [uv](https://docs.astral.sh/uv/) if
+you don't have it. On Linux x86_64 it downloads the terminal client prebuilt (its SHA-256 is
+checked); elsewhere it builds it with `cargo` if you have Rust, or you use the web UI. To read
+the script first: `curl -fsSL https://agent-chat-i4sv.onrender.com/install.sh -o install.sh`.
+
+Then start your model server and run `agent-chat`, like you'd run `claude`: it starts the app
+in the background if it isn't running and opens the terminal client.
+
+```
+agent-chat                 the terminal client (starts the app first if needed)
+agent-chat web             the web UI in your browser
+agent-chat status | stop | restart | logs [-f]
+agent-chat update [VER]    the latest release (or VER); keeps your data
+agent-chat uninstall       removes the app and commands; keeps your data unless --purge
+```
+
+`AGENT_CHAT_PORT` picks the port (default 8765). The launcher also works straight from a git
+checkout (`bin/agent-chat`), using the checkout's code and `data/`.
+
+## Run from a checkout
 
 ```bash
 # 1. start your model (this app never starts it for you), e.g.
@@ -116,7 +143,10 @@ port). It starts only this app, never the model.
   Settings, to let agents act without asking at all. The chip turns red while bypass is on.
   Anything an agent reads (web pages, emails) could try to trick it, so only bypass when you
   trust the task.
-- The **compact** button in the header summarizes older messages on demand.
+- The **compact** button in the header summarizes older messages on demand (`/compact keep the
+  API decisions` says what the summary must keep).
+- The end of every chat says how many times it was compacted and how long it has been going
+  (`compacted 2× · going for 3h 12m`); `/usage` and `/context` repeat it.
 - The header shows a context bar (`ctx 12k / 85k`) and the last reply's speed.
   Each reply's header shows its speed, tokens in and out, and how long it thought.
 - **Chat titles** are written by the model after the first reply (Settings → Agents turns it
@@ -129,22 +159,53 @@ port). It starts only this app, never the model.
   where it is. When you scroll up during a reply, a **Newest** pill takes you back down.
 - **Ctrl+B** hides the chat list to give the conversation the width.
 
+## Slash commands
+
+Type `/` at the start of the message box (web or terminal) and a menu of commands opens above
+it, like Claude Code's. Typing filters it, ↑/↓ choose, Tab completes, Enter runs, Esc closes.
+Commands run right away, even while an agent works; they are never sent to the agent.
+`//text` sends `/text` as a message, and a first word with another `/` in it (a path like
+`/etc/hosts`) is sent as a message too.
+
+| Command | Does |
+|---|---|
+| `/help` | Every command and the keyboard shortcuts |
+| `/new [agent]` (`/clear`) | A new chat with this chat's agent, or the one you name |
+| `/resume [search]` (`/chats`) | Find an earlier chat |
+| `/rename [title]`, `/pin`, `/delete` | This chat's name, pin, and deleting it (asks first) |
+| `/branch` (`/fork`) | A new chat that continues from the end of this one |
+| `/retry` (`/regenerate`), `/edit`, `/stop` | Regenerate the last reply, edit and resend your last message, stop the reply |
+| `/compact [instructions]` | Summarize older messages now; the instructions say what to keep |
+| `/export [md\|json]`, `/copy` | Save the chat (the terminal client writes it to the current folder), copy the last reply |
+| `/agents`, `/model [name]` | Edit this chat's agent; show the models or switch the agent's model (`default` clears it) |
+| `/memory`, `/remember <fact>` | The memory panel; save a fact every agent shares |
+| `/permissions [ask\|bypass]` | Whether agents ask before running commands and sending email |
+| `/settings` (`/config`), `/routines`, `/files`, `/verbose`, `/theme [name]` | Panels and display |
+| `/context`, `/usage` (`/cost`, `/stats`), `/status` | Context use, tokens and speed for this chat, the model server |
+| `/quit` (`/exit`) | Terminal client only |
+
+Commands that would change what a running agent is doing (`/retry`, `/edit`, `/compact`,
+`/rename`, `/pin`, `/delete`) wait: they say the agent is working and keep your text.
+
 ## Terminal client
 
 `tui/` holds a Rust terminal client that talks to the same app, so the web UI and the terminal
 share every chat, agent, memory and setting. It draws the same things the web UI does: the
 sidebar with agents and their live status, chats grouped by day, and every reply as a trace.
 
+The installer puts it on your PATH (`agent-chat` starts it). From a checkout:
+
 ```bash
 cd tui && cargo build --release          # needs a Rust toolchain (rustup.rs); ~1 min, 8 MB binary
-./target/release/agent-chat-tui          # or --url http://host:8765, --light, --plain
+./target/release/agent-chat-tui          # or --url http://host:8765, --light, --plain, --chat ID
 ```
 
 ![The terminal client: the same handoff, approvals included](docs/img/tui.png)
 
 - **Everything is on the keyboard**: F1 lists it. Ctrl+K is the same palette as the web UI
   (chats by content, agents, commands); `n` or a number starts a chat; Enter sends, or queues
-  while the agent works; `y` / `a` / `n` answer an approval; Ctrl+S stops; Alt+O opens every
+  while the agent works; `/` opens the slash commands; Alt+Y / Alt+A / Alt+N approve, approve
+  all for the run, or deny from anywhere (plain `y` / `a` / `n` when the trace has the focus); Ctrl+S stops; Alt+O opens every
   thinking block and tool result; Alt+F is the workspace drawer (Enter opens a file in a
   viewer); Alt+M memory, Alt+R routines, Alt+S settings, Alt+A the agent editor; F2 rename,
   Alt+P pin, Ctrl+G branch, Ctrl+E edit and resend your last message, Ctrl+R regenerate or
@@ -155,7 +216,14 @@ cd tui && cargo build --release          # needs a Rust toolchain (rustup.rs); ~
   Space toggles, Ctrl+S saves). Chat titles, unread dots, model-written titles, live shell
   output, nested handoffs and compaction markers all arrive over the same event stream the
   browser uses.
-- Light terminals: `--light`; to keep your terminal's own colors: `--plain`.
+- **Pasting** works in any terminal: line endings and tabs are kept as text, color codes and
+  other control characters are dropped, and a paste over 10 lines or 1,000 characters goes
+  into the box as one `[Pasted text #1 +120 lines]` token that is sent in full. Terminals
+  without bracketed paste are detected by timing, so a pasted newline never sends early.
+- Ctrl+C closes a dialog, then clears the filter or a non-empty message box, and only then
+  quits; Ctrl+Q always quits.
+- Light terminals: `--light` (or `/theme light`, remembered); to keep your terminal's own
+  colors: `--plain`.
 
 ## Starter agents
 
@@ -398,6 +466,7 @@ GET  /api/chats/{id}/stream              SSE: snapshot, then every event of the 
 POST /api/chats/{id}/fork {upto}         branch;     PATCH /api/chats/{id} {title, pinned, agent_id}
 GET  /api/chats/{id}/export.md|.json     exports;    POST /api/chats/delete {ids}
 POST /api/chats/{id}/approvals/{aid} {approve, all}
+POST /api/chats/{id}/compact {instructions?}   summarize older messages now
 GET  /api/workspace?agent_id&path        folder listing;  GET /api/workspace/file?agent_id&path[&download]
 GET  /api/agents/{id}/prompt             the composed system prompt;  PUT /api/agents/order {ids}
 GET  /api/search?q=                      chats whose messages contain q
@@ -418,8 +487,14 @@ That runs, in order: `tests/test_unit.py` (history, compaction, routines, memory
 agent order), `tests/e2e_calendar.py`, `tests/e2e_browser.py` (real headless Brave over a
 local page), `tests/e2e_ui.py` (the web UI itself in headless Brave: streaming,
 approvals, files, palette, branching, images, unread, errors, keyboard, mobile) and, when
-`cargo` is installed, `tests/e2e_tui.py` (the terminal client in a pseudo-terminal: the same
-flows, read back from an emulated screen).
+`cargo` is installed, the Rust unit tests (`cargo test` in `tui/`) and the terminal client in a
+pseudo-terminal, read back from an emulated screen: `tests/e2e_tui.py` (the main flows, pastes,
+slash commands), `tests/e2e_tui_keys.py` (every key in every pane and dialog, server outages,
+CLI flags), `tests/e2e_tui_render.py` (hostile text, emoji, every size from 1×1 up, resize
+storms; each step checks the screen matches a full repaint) and `tests/e2e_tui_slash.py`
+(every command and alias in every state). `tests/e2e_ui_more.py` does the same for the web
+slash menu, the chat footer and huge pastes. `TEST_PORT_BASE=8900 tests/run_all.sh` moves every
+port, so two runs can share a machine.
 
 To run one suite by hand, start the mocks and the app yourself:
 

@@ -1,10 +1,11 @@
-// The message box: sending, queueing while the agent works, attachments, the permission chip.
+// The message box: sending, queueing while the agent works, slash commands, attachments, the permission chip.
 
 import { S, agentById } from "./state.js";
 import { $, el, svgIcon, iconBtn, api, fmtSize } from "./util.js";
 import { toast, confirm, openImage } from "./ui.js";
 import { runChat, userBubble, scrollBottom, openChat } from "./chat.js";
 import { openSettings } from "./settings.js";
+import { menuKeydown, syncMenu, parseSlash, runCommand, closeCard } from "./commands.js";
 
 const input = $("#input");
 
@@ -13,7 +14,7 @@ export function setRunning(running) {
   const send = $("#send-btn");
   send.querySelector("span").textContent = running ? "Queue" : "Send";
   send.title = running ? "Queue (Enter): the agent reads it at its next step" : "Send (Enter)";
-  input.placeholder = running ? "Queue a message: the agent reads it at its next step" : "Message";
+  input.placeholder = running ? "Queue a message: the agent reads it at its next step" : "Message, or / for commands";
   $("#stop-btn").hidden = !running;
   $("#sub-banner-stop").hidden = !running;
   $("#hdr-compact").disabled = running;
@@ -53,9 +54,11 @@ export function renderQueue() {
   }
 }
 
-// Put text back in a chat's message box, ahead of anything typed there since.
+// Put text back in a chat's message box, ahead of anything typed there since. It comes back as the message
+// it was: one that would read as a command (sent as "//help me…", queued as "/help me…") gets its "/" back.
 export function returnToInput(chatId, text) {
   if (!text) return;
+  if (parseSlash(text).text !== text) text = `/${text}`;
   if (chatId !== S.chatId) {
     S.drafts[chatId] = S.drafts[chatId] ? `${text}\n\n${S.drafts[chatId]}` : text;
     return;
@@ -64,6 +67,7 @@ export function returnToInput(chatId, text) {
   autoGrow();
   input.focus();
   input.setSelectionRange(text.length, text.length);
+  syncMenu();  // a menu open over what was typed no longer matches the box
 }
 
 async function unqueue(itemId, discard = false) {
@@ -83,20 +87,25 @@ export function autoGrow() {
   input.style.height = Math.min(input.scrollHeight, 260) + "px";
 }
 
-input.addEventListener("input", autoGrow);
+input.addEventListener("input", () => { autoGrow(); syncMenu(); });
 input.addEventListener("keydown", (e) => {
+  if (menuKeydown(e)) return;  // the slash-command menu is open and used the key
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
     e.preventDefault();
     $("#composer").requestSubmit();
   } else if (e.key === "ArrowUp" && !e.isComposing && !e.target.value && S.queue.length) {
     e.preventDefault();  // like Claude Code: pull the queued messages back to edit them
     unqueue(null);
-  }
+  } else if (e.key === "Escape" && !e.isComposing && closeCard()) e.preventDefault();  // a composing Esc is the IME's
 });
 
 $("#composer").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const typed = input.value.trim();
+  const raw = input.value.trim();
+  const slash = parseSlash(raw);  // a command runs here, even while the agent works; it is never sent or queued
+  if (slash.cmd) return runCommand(slash.cmd, slash.args);
+  if (slash.unknown != null) return toast(`Unknown command /${slash.unknown}. To send a message that starts with /, begin it with //.`, "info");
+  const typed = slash.text;
   const content = (typed + attachmentText()).trim();
   if (!content || !S.chatId) return;
   if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
@@ -107,7 +116,7 @@ $("#composer").addEventListener("submit", async (e) => {
   renderAttachments();
   autoGrow();
   delete S.drafts[S.chatId];
-  const restore = () => { input.value = typed; S.attachments = attachments; renderAttachments(); autoGrow(); };
+  const restore = () => { input.value = raw; S.attachments = attachments; renderAttachments(); autoGrow(); };
   if (S.running) {  // the server queues it (or starts a run with it, if the run just ended)
     try {
       const res = await api("POST", `/api/chats/${S.chatId}/run`, { content, images });
@@ -180,9 +189,21 @@ export async function uploadFiles(files) {
 
 $("#attach-btn").onclick = () => $("#file-input").click();
 $("#file-input").addEventListener("change", (e) => { uploadFiles([...e.target.files]); e.target.value = ""; });
+// Chrome's own paste of a long run of one character ("xxxx…", "-----…") is quadratic: 50,000 of them
+// freeze the page for ~3 s (~6 s on a phone) and every later keystroke takes as long. A paste with any
+// word over 2,000 chars is inserted as a value change instead, which is instant (Ctrl+Z can't take it back).
+// The check starts only where a word does: a bare /\S{2000}/ rescans every word from each of its letters,
+// which freezes the page for seconds on megabytes of 1,500-letter words.
+const LONG_WORD = /(?:^|\s)\S{2000}/;
 input.addEventListener("paste", (e) => {
   const files = [...(e.clipboardData?.files || [])];
-  if (files.length) { e.preventDefault(); uploadFiles(files); }
+  if (files.length) { e.preventDefault(); uploadFiles(files); return; }
+  const text = e.clipboardData?.getData("text/plain") || "";
+  if (!LONG_WORD.test(text)) return;
+  e.preventDefault();
+  input.setRangeText(text.replace(/\r\n?/g, "\n"), input.selectionStart, input.selectionEnd, "end");
+  input.dispatchEvent(new Event("input"));
+  if (input.selectionEnd === input.value.length) input.scrollTop = input.scrollHeight;  // as a paste would: show the caret
 });
 let dragDepth = 0;
 window.addEventListener("dragenter", (e) => {

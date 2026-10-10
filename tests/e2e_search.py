@@ -11,6 +11,7 @@ import re
 import httpx
 
 B = os.environ.get("AC_URL", "http://127.0.0.1:8767")
+MOCK = os.environ.get("MOCK_URL", "http://127.0.0.1:8766/v1")
 SEARX = os.environ.get("SEARXNG_URL", "http://127.0.0.1:8888")
 
 
@@ -51,7 +52,7 @@ async def search(c, query):
 
 async def test_searxng(c):
     print("\n== web_search via SearXNG")
-    saved = await settings(c, base_url="http://127.0.0.1:8766/v1", search_url=SEARX)
+    saved = await settings(c, base_url=MOCK, search_url=SEARX)
     assert saved["search_url"] == SEARX, saved
     out = await search(c, "FastAPI background tasks")
     print("  " + out[:300].replace("\n", "\n  "))

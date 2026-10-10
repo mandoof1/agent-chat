@@ -16,9 +16,12 @@ Behaviour is keyed off the last user message:
   "cutoff N [crowded|full]" -> the reply fills the context window (finish_reason "length") N
                       times, then answers; "crowded"/"full" report the prompt at 80%/95% of n_ctx
   "delegate cutoff" -> Orchestrator asks Coder "cutoff 2"
+  "verbatim: <text>" -> thinks (the start of) <text>, then answers <text> exactly, whatever it holds
+                      (escape codes, emoji, markdown); "verbatim slow: <text>" streams it slowly
   a message queued mid-turn -> "Noted your aside: <message>"
   anything else    -> thinks, then answers with Markdown and a code block
-After a tool result it answers with a summary of that result.
+After a tool result it answers with a summary of that result. A compaction summary echoes the
+/compact instructions ("Kept as asked: …") when the request carries them.
 """
 
 import asyncio
@@ -126,6 +129,8 @@ async def completions(request: Request):
         elif summarizing:
             reasoning = "Summarize the transcript."
             text = f"## Summary\n- Earlier transcript had {last['content'].count('ASSISTANT:')} assistant turns.\n- The user wants big replies."
+            if keep := re.search(r"make sure to keep: (.*)", last["content"]):  # /compact <instructions>
+                text += f"\n- Kept as asked: {keep[1]}"
         elif (last["role"] == "tool" and "list_dir" in tools
               and (loop := re.match(r"loop (\d+)", next(m["content"] for m in msgs if m["role"] == "user")))
               and sum(m["role"] == "tool" for m in msgs) < int(loop[1])):
@@ -160,6 +165,11 @@ async def completions(request: Request):
             text = ""
             if user.startswith("[The user sent this while you were working"):
                 text = "Noted your aside: " + user.split("\n", 1)[1].split("\n\n[From your memory")[0]
+            elif user.startswith(("verbatim: ", "verbatim slow: ")):  # render tests: think and answer with the text as given
+                text = user.split(": ", 1)[1].split("\n\n[From your memory")[0]
+                reasoning = text[:2000] if user.startswith("verbatim: ") else text[:300]
+                if user.startswith("verbatim slow"):
+                    delay = 0.03
             elif user.startswith("loop ") and "list_dir" in tools:
                 tool = ("list_dir", {})
             elif user.startswith("write code") and "write_file" in tools:

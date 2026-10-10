@@ -199,8 +199,9 @@ def transcript(msgs: list[dict], user_label: str) -> str:
 
 
 async def compact(run, agent: dict, chat: dict, *, path: list, n_ctx: int, reason: str,
-                  client: httpx.AsyncClient, settings: dict, user_label: str = "USER") -> bool:
-    """Summarize older messages of `chat`. Returns False when there is nothing worth compacting."""
+                  client: httpx.AsyncClient, settings: dict, user_label: str = "USER", instructions: str = "") -> bool:
+    """Summarize older messages of `chat`. Returns False when there is nothing worth compacting.
+    `instructions` (from /compact) say what the summary must keep."""
     msgs = chat["messages"]
     prev = latest(chat)
     start = prev["upto"] if prev else 0
@@ -228,7 +229,10 @@ async def compact(run, agent: dict, chat: dict, *, path: list, n_ctx: int, reaso
         request = ""
         if prev:
             request += f"Summary of the conversation before this transcript:\n\n{prev['summary']}\n\n"
-        request += f"Transcript to summarize:\n\n{body}\n\nWrite the updated summary now."
+        request += f"Transcript to summarize:\n\n{body}\n\n"
+        if instructions:
+            request += f"When summarizing, make sure to keep: {instructions}\n\n"
+        request += "Write the updated summary now."
         comp = llm.Completion()
         try:
             await llm.stream_chat(client, settings, model=agent["model"], temperature=agent["temperature"], tools=None,
@@ -254,6 +258,8 @@ async def compact(run, agent: dict, chat: dict, *, path: list, n_ctx: int, reaso
             f"{QUEUED_NOTE}\n{m['content']}" for m in msgs[last_user + 1:cut] if m.get("role") == "user"])
     entry = {"upto": cut, "summary": summary, "at": time.time(), "reason": reason, "request": request,
              "before_tokens": before}
+    if instructions:
+        entry["instructions"] = instructions
     chat.setdefault("compactions", []).append(entry)
     entry["after_tokens"] = estimate(chat, size(payload(chat), None))
     run.emit("compact_end", path=path, compaction=entry)

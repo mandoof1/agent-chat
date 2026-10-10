@@ -151,6 +151,8 @@
         <section id="messages" hidden>
           <div id="history"></div>
           <div id="live"></div>
+          <div id="chat-foot" hidden></div>
+          <div id="cmd-out" aria-live="polite"></div>
         </section>
         <button type="button" id="jump-btn" class="jump" hidden><svg class="ic"><use href="#i-down"/></svg><span>Newest</span></button>
 
@@ -162,13 +164,17 @@
           <div id="queue" hidden></div>
           <div id="attachments" hidden></div>
           <div class="composer-box">
-            <textarea id="input" rows="1" placeholder="Message" autocomplete="off"></textarea>
+            <div id="slash-menu" hidden>
+              <div id="slash-list" role="listbox" aria-label="Commands"></div>
+              <div class="sc-foot"><span><kbd>↑</kbd><kbd>↓</kbd> select</span><span><kbd>Tab</kbd> complete</span><span><kbd>Enter</kbd> run</span><span><kbd>Esc</kbd> close</span></div>
+            </div>
+            <textarea id="input" rows="1" placeholder="Message, or / for commands" autocomplete="off" aria-label="Message" aria-autocomplete="list" aria-controls="slash-list"></textarea>
             <div class="composer-bar">
               <button type="button" id="attach-btn" class="icon-btn" title="Attach files (or drop or paste them)"><svg class="ic"><use href="#i-clip"/></svg></button>
               <input type="file" id="file-input" multiple hidden>
               <button type="button" id="mode-btn" class="mode-chip" title="Click to change whether agents ask before running commands and sending email"><svg class="ic"><use href="#i-shield"/></svg><span>Asks before acting</span></button>
               <span class="grow"></span>
-              <span class="composer-hint"><kbd>Enter</kbd> send <span class="sep">·</span> <kbd>Shift</kbd>+<kbd>Enter</kbd> line <span class="sep">·</span> <button type="button" class="linkish" id="hint-shortcuts"><kbd>?</kbd> shortcuts</button></span>
+              <span class="composer-hint"><kbd>Enter</kbd> send <span class="sep">·</span> <kbd>Shift</kbd>+<kbd>Enter</kbd> line <span class="sep">·</span> <kbd>/</kbd> commands <span class="sep">·</span> <button type="button" class="linkish" id="hint-shortcuts"><kbd>?</kbd> shortcuts</button></span>
               <button type="button" id="stop-btn" class="btn danger sm" hidden title="Stop the agent"><svg class="ic"><use href="#i-stop"/></svg><span>Stop</span></button>
               <button type="submit" id="send-btn" class="send" title="Send (Enter)"><span>Send</span><svg class="ic"><use href="#i-send"/></svg></button>
             </div>

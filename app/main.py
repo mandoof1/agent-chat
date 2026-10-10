@@ -5,21 +5,23 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import time
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from . import agenda, browser, llm, mail, memory, routines, runner, store, tools
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
@@ -128,6 +130,30 @@ async def server(base_url: str | None = None, api_key: str | None = None):
     return await llm.server_info(runner.client, settings)
 
 
+_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def _valid_text(v):
+    """Lone UTF-16 surrogates ("\\ud800" alone is valid JSON, and a browser sends one for half of a pasted
+    emoji) can't be saved or streamed as UTF-8, so they become U+FFFD where text comes in."""
+    if isinstance(v, str):
+        return v.encode("utf-16", "surrogatepass").decode("utf-16", "replace") if _SURROGATE.search(v) else v
+    if isinstance(v, dict):
+        return {_valid_text(k): _valid_text(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_valid_text(x) for x in v]
+    return v
+
+
+class In(BaseModel):
+    """A request body."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _text(cls, data):
+        return _valid_text(data)
+
+
 @app.get("/api/events")
 async def events():
     queue: asyncio.Queue = asyncio.Queue()
@@ -136,7 +162,7 @@ async def events():
                              media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
 
-class SettingsIn(BaseModel):
+class SettingsIn(In):
     base_url: str | None = None
     api_key: str | None = None
     model: str | None = None
@@ -160,7 +186,7 @@ async def put_settings(body: SettingsIn):
 
 # ------------------------------------------------------------------ agents
 
-class AgentIn(BaseModel):
+class AgentIn(In):
     name: str
     emoji: str = "🤖"
     color: str = "#7c6cff"
@@ -177,19 +203,23 @@ class AgentIn(BaseModel):
     order: int | None = None
 
 
-class OrderIn(BaseModel):
+class OrderIn(In):
     ids: list[str]
 
 
 @app.put("/api/agents/order")
 async def order_agents(body: OrderIn):
     """Arrange the rail: the given ids in this order, everything else after them."""
-    return store.reorder_agents([i for i in body.ids if store.get_agent(i)])
+    agents = store.reorder_agents([i for i in body.ids if store.get_agent(i)])
+    runner.broadcast({"type": "agents_changed"})
+    return agents
 
 
 @app.post("/api/agents")
 async def create_agent(body: AgentIn):
-    return store.save_agent(body.model_dump() | {"id": store.new_id()})
+    agent = store.save_agent(body.model_dump() | {"id": store.new_id()})
+    runner.broadcast({"type": "agents_changed"})
+    return agent
 
 
 @app.get("/api/agents/{agent_id}/prompt")
@@ -204,39 +234,42 @@ async def update_agent(agent_id: str, body: AgentIn):
     data = body.model_dump()
     if data.get("order") is None:
         data["order"] = current["order"]  # the editor doesn't manage positions; keep the rail order
-    return store.save_agent(data | {"id": agent_id})
+    agent = store.save_agent(data | {"id": agent_id})
+    runner.broadcast({"type": "agents_changed"})
+    return agent
 
 
 @app.delete("/api/agents/{agent_id}")
 async def delete_agent(agent_id: str):
     _need_agent(agent_id)
     store.delete_agent(agent_id)
+    runner.broadcast({"type": "agents_changed"})
     return {"ok": True}
 
 
 # ------------------------------------------------------------------- chats
 
-class ChatIn(BaseModel):
+class ChatIn(In):
     agent_id: str
 
 
-class ChatPatch(BaseModel):
+class ChatPatch(In):
     title: str | None = None
     agent_id: str | None = None
     pinned: bool | None = None
 
 
-class RunIn(BaseModel):
+class RunIn(In):
     content: str | None = None
     from_index: int | None = None  # truncate history here first (edit / regenerate)
     images: list[str] = []         # workspace paths of attached images (from /upload), for vision models
 
 
-class ForkIn(BaseModel):
+class ForkIn(In):
     upto: int  # keep messages[:upto]
 
 
-class IdsIn(BaseModel):
+class IdsIn(In):
     ids: list[str]
 
 
@@ -352,10 +385,14 @@ async def unqueue(chat_id: str, item_id: str):
     return taken[0]
 
 
+class CompactIn(In):
+    instructions: str | None = None  # what the summary must keep, e.g. "the API design decisions"
+
+
 @app.post("/api/chats/{chat_id}/compact")
-async def compact_chat(chat_id: str):
+async def compact_chat(chat_id: str, body: CompactIn | None = None):
     chat, agent = _startable(chat_id)
-    runner.start(chat, agent, mode="compact")
+    runner.start(chat, agent, mode="compact", instructions=((body and body.instructions) or "").strip())
     return {"ok": True}
 
 
@@ -367,7 +404,7 @@ async def stop_chat(chat_id: str):
     return {"ok": True}
 
 
-class ApprovalIn(BaseModel):
+class ApprovalIn(In):
     approve: bool
     all: bool = False  # approve everything else this run asks for, too
 
@@ -423,7 +460,7 @@ async def upload(chat_id: str, request: Request, name: str):
 async def export_chat(chat_id: str):
     chat = _need_chat(chat_id)
     agent = store.get_agent(chat["agent_id"]) or {"name": "Deleted agent"}
-    lines = [f"# {chat['title']}", "", f"Agent: {agent['name']}", ""]
+    lines = [f"# {chat['title']}", "", f"Agent: {agent['name']} · {_chat_age(chat)}", ""]
     results = {m.get("tool_call_id"): m for m in chat["messages"] if m.get("role") == "tool"}
     for m in chat["messages"]:
         if m["role"] == "user":
@@ -443,11 +480,40 @@ async def export_chat(chat_id: str):
                     body = body if len(body) <= 2000 else body[:2000] + "\n…"
                     lines += ["<details><summary>Result</summary>", "", "```", body, "```", "", "</details>", ""]
     return PlainTextResponse("\n".join(lines), media_type="text/markdown",
-                             headers={"Content-Disposition": f'attachment; filename="{_export_name(chat)}.md"'})
+                             headers={"Content-Disposition": _attachment(f"{_export_name(chat)}.md")})
+
+
+def _span(seconds: float) -> str:
+    """A running time the way the web UI's chat footer says it: 45s, 12m, 3h 12m, 2d 4h."""
+    s = max(0, int(seconds))
+    if s < 3600:
+        return f"{s}s" if s < 60 else f"{s // 60}m"
+    return f"{s // 3600}h {s // 60 % 60}m" if s < 86400 else f"{s // 86400}d {s // 3600 % 24}h"
+
+
+def _chat_age(chat: dict, now: float | None = None) -> str:
+    """'compacted 2× · started 2026-10-10 09:14 (going for 3h 12m)', as /usage and /context say it."""
+    n = len(chat.get("compactions") or [])
+    start = chat.get("created") or chat.get("updated") or time.time()
+    going = _span((time.time() if now is None else now) - start)
+    return f"{f'compacted {n}×' if n else 'not compacted yet'} · started {datetime.fromtimestamp(start):%Y-%m-%d %H:%M} (going for {going})"
 
 
 def _export_name(chat: dict) -> str:
     return "".join(c if c.isalnum() else "-" for c in chat["title"])[:60].strip("-") or "chat"
+
+
+def _attachment(name: str) -> str:
+    """Content-Disposition for a download called `name`. Header values must be Latin-1, so filename= gets an
+    ASCII stand-in and filename*= the real name in percent-encoded UTF-8 (RFC 6266), which browsers prefer."""
+    plain = "".join(c if " " <= c <= "~" and c not in '"\\' else "_" for c in name)
+    return f"attachment; filename=\"{plain}\"; filename*=UTF-8''{quote(name, safe='')}"
+
+
+def _shown(name: str) -> str:
+    """A file name as text: bytes that aren't UTF-8 (which Python keeps as surrogate escapes, and JSON can't
+    carry) become U+FFFD."""
+    return os.fsencode(name).decode("utf-8", "replace")
 
 
 @app.get("/api/chats/{chat_id}/export.json")
@@ -457,7 +523,7 @@ async def export_chat_json(chat_id: str):
     subchats = [s for s in (store.get_chat(i) for i in chat.get("subchats") or []) if s]
     data = {"version": VERSION, "exported": time.time(), "chat": chat, "subchats": subchats,
             "agent": store.get_agent(chat["agent_id"])}
-    return JSONResponse(data, headers={"Content-Disposition": f'attachment; filename="{_export_name(chat)}.json"'})
+    return JSONResponse(data, headers={"Content-Disposition": _attachment(f"{_export_name(chat)}.json")})
 
 
 # --------------------------------------------------------------- workspace
@@ -483,9 +549,9 @@ async def workspace_listing(agent_id: str, path: str = "."):
             st = p.stat()
         except OSError:
             continue
-        entries.append({"name": p.name, "dir": p.is_dir(), "size": st.st_size if p.is_file() else None,
-                        "mtime": st.st_mtime, "path": str(p.relative_to(ws))})
-    return {"workspace": str(ws), "path": str(target.relative_to(ws)) if target != ws else ".", "entries": entries}
+        entries.append({"name": _shown(p.name), "dir": p.is_dir(), "size": st.st_size if p.is_file() else None,
+                        "mtime": st.st_mtime, "path": _shown(str(p.relative_to(ws)))})
+    return {"workspace": _shown(str(ws)), "path": _shown(str(target.relative_to(ws))) if target != ws else ".", "entries": entries}
 
 
 @app.get("/api/workspace/file")
@@ -498,7 +564,7 @@ async def workspace_file(agent_id: str, path: str, download: bool = False):
         mime = "text/plain"  # an agent-written page must never run as a page on this origin (it could call the API)
     headers = {"Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox"}
     if download:
-        headers["Content-Disposition"] = f'attachment; filename="{target.name}"'
+        headers["Content-Disposition"] = _attachment(_shown(target.name))
     return FileResponse(target, media_type=mime, headers=headers)
 
 
@@ -512,7 +578,7 @@ def _looks_text(path: Path) -> bool:
 
 # ------------------------------------------------------------------- email
 
-class EmailIn(BaseModel):
+class EmailIn(In):
     imap_host: str | None = None
     imap_port: int | None = None
     imap_security: str | None = None
@@ -548,7 +614,7 @@ async def test_email():
 
 # --------------------------------------------------------------- calendars
 
-class CalendarIn(BaseModel):
+class CalendarIn(In):
     name: str
     url: str
 
@@ -605,7 +671,7 @@ async def run_routine(routine: dict) -> str:
     return "started"
 
 
-class RoutineIn(BaseModel):
+class RoutineIn(In):
     name: str | None = None
     agent_id: str | None = None
     prompt: str | None = None
@@ -660,7 +726,7 @@ async def run_routine_now(routine_id: str):
 
 # ------------------------------------------------------------------ memory
 
-class MemoryIn(BaseModel):
+class MemoryIn(In):
     fact: str | None = None
     category: str | None = None
     importance: int | None = None

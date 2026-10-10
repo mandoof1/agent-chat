@@ -83,6 +83,13 @@ export function clock(ts) {
   return `${d.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
 }
 
+// How long something has been going: 45s, 12m, 3h 12m, 2d 4h (app/main.py's _span says it the same way).
+export function fmtSpan(s) {
+  s = Math.max(0, Math.floor(s));
+  if (s < 3600) return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m`;
+  return s < 86400 ? `${Math.floor(s / 3600)}h ${Math.floor(s / 60) % 60}m` : `${Math.floor(s / 86400)}d ${Math.floor(s / 3600) % 24}h`;
+}
+
 // Which list section a chat belongs in, by when it was last touched.
 export function dayGroup(ts) {
   if (!ts) return "Older";

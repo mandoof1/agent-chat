@@ -77,6 +77,8 @@ function connectGlobalEvents() {
     } else if (ev.type === "queue_returned") {
       returnToInput(ev.chat_id, ev.text);
       if (ev.chat_id === S.chatId) toast("The run ended before the agent read your queued message, so it's back in the message box.", "info");
+    } else if (ev.type === "agents_changed") {  // made, edited or deleted here, in another tab or in the terminal client
+      reloadState().catch(() => {});
     } else if (ev.type === "routines_changed") {
       if ($("#routines-dialog").open) loadRoutines();
     } else if (ev.type === "memory_status") {
@@ -138,7 +140,7 @@ const SHORTCUTS = [
   [["Ctrl", "O"], "Show or hide all thinking and tool details"],
   [["Ctrl", "B"], "Show or hide the chat list"],
   [["Ctrl", "."], "Show or hide workspace files"],
-  [["/"], "Focus the message box"],
+  [["/"], "Focus the message box; in an empty one, start a command"],
   [["n"], "New chat"],
   [["?"], "This list"],
   [["Esc"], "Close a dialog or menu"],
@@ -167,7 +169,12 @@ document.addEventListener("keydown", (e) => {
   if (mod || e.altKey) return;
   const dialogOpen = !!document.querySelector("dialog[open]");
   if (dialogOpen || isTyping()) return;
-  if (e.key === "/" && !$("#composer").hidden) { e.preventDefault(); $("#input").focus(); }
+  if (e.key === "/" && !$("#composer").hidden) {
+    e.preventDefault();
+    const box = $("#input");
+    box.focus();
+    if (!box.value) { box.value = "/"; box.dispatchEvent(new Event("input")); }  // opens the command menu
+  }
   else if (e.key === "?") { e.preventDefault(); openShortcuts(); }
   else if (key === "n") { e.preventDefault(); $("#new-chat-btn").click(); }
 });

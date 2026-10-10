@@ -1,0 +1,32 @@
+# Render Blueprint for the install site (site/): the landing page and install.sh, served as a
+# static site. Nothing is built; site/ is published as it is.
+# Live at https://agent-chat-i4sv.onrender.com (DEFAULT_SITE in site/install.sh must match it).
+services:
+  - type: web
+    name: agent-chat
+    runtime: static
+    buildCommand: echo "static site, nothing to build"
+    staticPublishPath: ./site
+    pullRequestPreviewsEnabled: false
+    buildFilter:
+      paths:
+        - site/**
+        - render.yaml
+    headers:
+      # Show the installer as text in a browser (people read it before running it), and never
+      # serve a stale copy from the CDN after it changes.
+      - path: /install.sh
+        name: Content-Type
+        value: text/plain; charset=utf-8
+      - path: /install.sh
+        name: Cache-Control
+        value: no-cache
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: no-referrer
+      - path: /*
+        name: Content-Security-Policy
+        value: "default-src 'self'; img-src 'self' https://raw.githubusercontent.com data:; style-src 'self' 'unsafe-inline'; script-src 'unsafe-inline'; font-src 'self'; connect-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"

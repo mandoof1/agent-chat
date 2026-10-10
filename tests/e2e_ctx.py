@@ -10,6 +10,7 @@ import time
 import httpx
 
 B = os.environ.get("AC_URL", "http://127.0.0.1:8767")
+MOCK = os.environ.get("MOCK_URL", "http://127.0.0.1:8766/v1")
 EVERY = 0.5  # runner.CONTEXT_EVERY
 
 
@@ -88,7 +89,7 @@ async def test_compact(c, chat):
 
 async def main():
     async with httpx.AsyncClient(timeout=120, headers={"X-Agent-Chat": "1"}) as c:
-        await c.put(f"{B}/api/settings", json={"base_url": "http://127.0.0.1:8766/v1", "auto_compact": True})
+        await c.put(f"{B}/api/settings", json={"base_url": MOCK, "auto_compact": True})
         chat = (await c.post(f"{B}/api/chats", json={"agent_id": "assistant"})).json()["id"]
         await test_exact(c, chat)
         await test_estimate(c, chat)

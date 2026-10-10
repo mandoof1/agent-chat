@@ -87,7 +87,7 @@ class Run:
         self.task: asyncio.Task | None = None
         self.stack = [View(self, chat, [], self.base)]  # active views, root first, deepest last
         self.n_ctx: int | None = None
-        self.bypassed: set[str] = set()  # tool calls that ran without asking (approvals bypassed)
+        self.bypassed: dict[str, str] = {}  # tool calls that ran without asking: call id -> "run" or "settings"
         self.queue: list[dict] = []  # messages the user sent during this run, not delivered yet
         self.turn = self.base  # like base, for the newest turn (queued messages can start one)
         self.auto_approve = False  # the user chose "approve everything for the rest of this run"
@@ -180,9 +180,8 @@ class Run:
 
     async def ask_approval(self, path: list, call_id: str, name: str, args: dict) -> bool:
         if store.get_settings().get("bypass_approvals") or self.auto_approve:  # approvals switched off
-            self.bypassed.add(call_id)
-            self.emit("approval_bypassed", path=path, call_id=call_id, name=name,
-                      reason="run" if self.auto_approve else "settings")
+            reason = self.bypassed[call_id] = "run" if self.auto_approve else "settings"
+            self.emit("approval_bypassed", path=path, call_id=call_id, name=name, reason=reason)
             return True
         approval_id = store.new_id()
         fut = asyncio.get_running_loop().create_future()
@@ -436,8 +435,8 @@ async def agent_loop(run: Run, agent: dict, chat: dict, *, depth: int, path: lis
             tool_msg = {"role": "tool", "tool_call_id": tc["id"], "content": result}
             if sub:
                 tool_msg["_sub"] = sub
-            if tc["id"] in run.bypassed:
-                tool_msg["_bypassed"] = True
+            if tc["id"] in run.bypassed:  # the reason too, so a saved chat still says "(this run)"
+                tool_msg.update(_bypassed=True, _bypass_reason=run.bypassed[tc["id"]])
             messages.append(tool_msg)
             save()
             run.emit("tool_result", path=path, call_id=tc["id"], content=result)
@@ -671,15 +670,15 @@ async def delegate(run: Run, parent: dict, args: dict, *, depth: int, path: list
 
 # ------------------------------------------------------------ run control
 
-def start(chat: dict, agent: dict, mode: str = "reply") -> Run:
+def start(chat: dict, agent: dict, mode: str = "reply", instructions: str = "") -> Run:
     cancel_extraction()  # real requests always win the (single) model slot
     run = Run(chat)
     runs[chat["id"]] = run
-    run.task = asyncio.create_task(_run_top(run, agent, mode))
+    run.task = asyncio.create_task(_run_top(run, agent, mode, instructions))
     return run
 
 
-async def _run_top(run: Run, agent: dict, mode: str) -> None:
+async def _run_top(run: Run, agent: dict, mode: str, instructions: str = "") -> None:
     chat = run.chat
     run.publish()
     run.emit("run_start", agent_id=agent["id"], chat=chat, run_base=run.base)
@@ -688,7 +687,7 @@ async def _run_top(run: Run, agent: dict, mode: str) -> None:
         if mode == "compact":
             n_ctx = await run.context_size() or 32768
             if await history.compact(run, agent, chat, path=[], n_ctx=n_ctx, reason="manual",
-                                     client=client, settings=store.get_settings()):
+                                     client=client, settings=store.get_settings(), instructions=instructions):
                 contacts = contactable(agent, [agent["id"]])
                 show_context(run, chat, [], estimate_context(agent, chat, None, contacts, agent_tools(agent, contacts)))
                 store.save_chat(chat)
