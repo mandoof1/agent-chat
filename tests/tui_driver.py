@@ -104,10 +104,12 @@ class Tui:
         def mask(lines):
             return [re.sub(r"\d\d:\d\d", "##:##", l) for l in lines]
 
+        self.settle()
         before = mask(self.lines())
         rows, cols = self.rows, self.cols
         self.resize(rows + 1, cols, wait)
         self.resize(rows, cols, wait)
+        self.settle()
         after = mask(self.lines())
         return [(y, b, a) for y, (b, a) in enumerate(zip(before, after)) if b != a]
 
@@ -143,11 +145,30 @@ class Tui:
     def find(self, needle):
         return any(needle in l for l in self.display())
 
+    def settle(self, quiet=0.05, limit=0.5):
+        """Read until the TUI has been silent for `quiet` seconds (at most `limit`). A frame
+        reaches the pty in pieces, so a screen read the moment a needle shows can be half drawn,
+        more so on a loaded machine."""
+        end = time.time() + limit
+        while time.time() < end:
+            r, _, _ = select.select([self.fd], [], [], quiet)
+            if not r:
+                return
+            try:
+                data = os.read(self.fd, 65536)
+            except OSError:
+                return
+            if not data:
+                return
+            self.log += data
+            self.stream.feed(data)
+
     def wait_for(self, needle, timeout=10):
         end = time.time() + timeout
         while time.time() < end:
             self.pump(0.2)
             if self.find(needle):
+                self.settle()  # the rest of the frame that drew it
                 return True
         return False
 
