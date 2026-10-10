@@ -7,6 +7,9 @@ import asyncio, json, os
 import httpx
 
 B = os.environ.get("AC_URL", "http://127.0.0.1:8767")
+MOCK = os.environ.get("MOCK_URL", "http://127.0.0.1:8766/v1")
+MOCK_NCTX = os.environ.get("MOCK_NCTX_URL", "http://127.0.0.1:8768/v1")
+MOCK_OVERFLOW = os.environ.get("MOCK_OVERFLOW_URL", "http://127.0.0.1:8769/v1")
 
 
 async def events(c, url):
@@ -35,7 +38,7 @@ async def run_turn(c, chat_id, content=None, endpoint="run"):
 
 async def test_subchat_view(c):
     print("\n== sub-chat live view + statuses")
-    await settings(c, base_url="http://127.0.0.1:8766/v1")
+    await settings(c, base_url=MOCK)
     root = (await c.post(f"{B}/api/chats", json={"agent_id": "orchestrator"})).json()["id"]
     result = {}
 
@@ -80,7 +83,7 @@ async def test_subchat_view(c):
 
 async def test_auto_compact(c):
     print("\n== auto-compaction (mock n_ctx=3000, compact at 70%)")
-    await settings(c, base_url="http://127.0.0.1:8768/v1", auto_compact=True, compact_at=70)
+    await settings(c, base_url=MOCK_NCTX, auto_compact=True, compact_at=70)
     chat = (await c.post(f"{B}/api/chats", json={"agent_id": "assistant"})).json()["id"]
     for i in range(1, 5):
         evs = await run_turn(c, chat, f"big {i}")
@@ -103,13 +106,47 @@ async def test_auto_compact(c):
 
 async def test_overflow(c):
     print("\n== overflow retry (mock rejects prompts > 6000 chars, auto-compact off)")
-    await settings(c, base_url="http://127.0.0.1:8769/v1", auto_compact=False)
+    await settings(c, base_url=MOCK_OVERFLOW, auto_compact=False)
     chat = (await c.post(f"{B}/api/chats", json={"agent_id": "assistant"})).json()["id"]
     for i in range(1, 4):
         evs = await run_turn(c, chat, f"big {i}")
         print(f"  turn {i}:", [e.get("message") or e.get("compaction", {}).get("reason") or e["type"]
                               for e in evs if e["type"] in ("compact_end", "error")] or "ok")
-    await settings(c, base_url="http://127.0.0.1:8766/v1", auto_compact=True)
+    await settings(c, base_url=MOCK, auto_compact=True)
+
+
+async def test_compact_instructions(c):
+    print("\n== /compact <instructions>: the summary request carries them; no body works as before")
+    await settings(c, base_url=MOCK)
+    chat = (await c.post(f"{B}/api/chats", json={"agent_id": "assistant"})).json()["id"]
+    for i in range(3):
+        await run_turn(c, chat, f"hello {i}")
+    seen, started = [], False
+    async for ev in events(c, f"{B}/api/chats/{chat}/stream"):
+        seen.append(ev)
+        if ev["type"] == "snapshot" and not started:
+            started = True
+            r = await c.post(f"{B}/api/chats/{chat}/compact", json={"instructions": "  the API design decisions "})
+            assert r.status_code == 200, r.text
+        if ev["type"] == "done":
+            break
+    end = next(e for e in seen if e["type"] == "compact_end")["compaction"]
+    print("  compaction:", {k: end[k] for k in ("reason", "upto", "instructions")}, "| summary:", end["summary"].splitlines()[-1])
+    assert end["reason"] == "manual" and end["instructions"] == "the API design decisions", end
+    assert "Kept as asked: the API design decisions" in end["summary"], end["summary"]
+    saved = (await c.get(f"{B}/api/chats/{chat}")).json()["compactions"][-1]
+    assert saved["instructions"] == "the API design decisions" and saved["summary"] == end["summary"]
+    await run_turn(c, chat, "one more")
+    await run_turn(c, chat, "and another")
+    async with c.stream("GET", f"{B}/api/chats/{chat}/stream") as r:  # no body at all, like the header button
+        async for line in r.aiter_lines():
+            if line.startswith("data:") and json.loads(line[5:])["type"] == "snapshot":
+                assert (await c.post(f"{B}/api/chats/{chat}/compact")).status_code == 200
+            if line.startswith("data:") and json.loads(line[5:])["type"] == "done":
+                break
+    plain = (await c.get(f"{B}/api/chats/{chat}")).json()["compactions"][-1]
+    print("  without instructions:", plain["summary"].splitlines()[-1])
+    assert "instructions" not in plain and "Kept as asked" not in plain["summary"] and plain["upto"] > saved["upto"]
 
 
 async def main():
@@ -117,5 +154,6 @@ async def main():
         await test_subchat_view(c)
         await test_auto_compact(c)
         await test_overflow(c)
+        await test_compact_instructions(c)
 
 asyncio.run(asyncio.wait_for(main(), 120))

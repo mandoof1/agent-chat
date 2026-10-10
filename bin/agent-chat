@@ -1,0 +1,816 @@
+#!/usr/bin/env bash
+# agent-chat: open Agent Chat in the terminal, starting the app server first if it isn't running.
+#
+#   agent-chat [client flags]   the terminal client (--light, --plain, --chat ID, --quiet, --url URL)
+#   agent-chat web              the browser UI
+#   agent-chat start | stop | restart | status | logs [-f]
+#   agent-chat update [VERSION] | uninstall [-y] [--purge] | version | help
+#
+# Works both as installed by install.sh and straight from a git checkout (bin/agent-chat), where
+# the checkout is the code and its data/ and workspace/ folders are used, like ./run.sh does.
+#
+# Environment: AGENT_CHAT_PORT (8765), AGENT_CHAT_DATA, AGENT_CHAT_WORKSPACE, AGENT_CHAT_HOME,
+# AGENT_CHAT_STATE (log and pid files), AGENT_CHAT_TUI (client binary), AGENT_CHAT_START_TIMEOUT
+# (seconds, default 90), AGENT_CHAT_NO_BROWSER=1, BROWSER.
+
+if [ -z "${BASH_VERSION:-}" ]; then echo "agent-chat: run this with bash" >&2; exit 1; fi
+set -euo pipefail
+
+# install.sh writes the install root here when it copies this file into place.
+INSTALLED_HOME=""
+
+# --------------------------------------------------------------------------- output
+
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != "dumb" ]; then
+  C_BOLD=$'\033[1m' C_DIM=$'\033[2m' C_BLUE=$'\033[38;5;69m' C_AMBER=$'\033[38;5;214m' C_RED=$'\033[38;5;203m' C_GREEN=$'\033[38;5;78m' C_OFF=$'\033[0m'
+else
+  C_BOLD="" C_DIM="" C_BLUE="" C_AMBER="" C_RED="" C_GREEN="" C_OFF=""
+fi
+say()  { printf '%s\n' "$*"; }
+warn() { printf '%s!%s %s\n' "$C_AMBER" "$C_OFF" "$*" >&2; }
+die()  { printf '%sagent-chat:%s %s\n' "$C_RED" "$C_OFF" "$*" >&2; exit 1; }
+pretty() { case "$1" in "$HOME"/*) printf '~%s' "${1#"$HOME"}" ;; *) printf '%s' "$1" ;; esac; }
+
+[ -n "${HOME:-}" ] || die "HOME is not set"
+
+# A directory path without repeated or trailing slashes ("/" stays "/").
+normdir() {
+  local p="$1"
+  while :; do case "$p" in *//*) p="${p//\/\//\/}" ;; *) break ;; esac; done
+  [ "$p" = / ] || p="${p%/}"
+  printf '%s' "$p"
+}
+
+PORT="${AGENT_CHAT_PORT:-8765}"
+case "$PORT" in
+  ''|*[!0-9]*|??????*) die "AGENT_CHAT_PORT=$PORT is not a port number (1-65535)" ;;
+esac
+PORT=$((10#$PORT))
+[ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || die "AGENT_CHAT_PORT=$PORT is not a port number (1-65535)"
+URL="http://127.0.0.1:$PORT"
+
+# The app, its checks and the client all talk to 127.0.0.1: never through a proxy from the
+# environment (which can't reach this machine's loopback anyway).
+export no_proxy="127.0.0.1,localhost,::1${no_proxy:+,$no_proxy}"
+export NO_PROXY="127.0.0.1,localhost,::1${NO_PROXY:+,$NO_PROXY}"
+
+# --------------------------------------------------------------------------- where things are
+
+# This script's real location (following symlinks, without GNU-only readlink -f).
+self="${BASH_SOURCE[0]}"
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case "$link" in /*) self="$link" ;; *) self="$(dirname "$self")/$link" ;; esac
+done
+SELF_DIR=$(cd "$(dirname "$self")" && pwd)
+SELF="$SELF_DIR/$(basename "$self")"
+
+data_root="${XDG_DATA_HOME:-$HOME/.local/share}"
+case "$data_root" in /*) ;; *) data_root="$HOME/.local/share" ;; esac
+if [ -f "$SELF_DIR/../app/main.py" ] && [ ! -f "$SELF_DIR/../.agent-chat-installed" ]; then
+  MODE=source                           # a git checkout: the checkout is the code
+  CODE=$(cd "$SELF_DIR/.." && pwd)
+  AC_HOME="$CODE"
+  DATA="${AGENT_CHAT_DATA:-$CODE/data}"
+  WORKSPACE="${AGENT_CHAT_WORKSPACE:-$CODE/workspace}"
+else
+  MODE=installed
+  if [ -f "$SELF_DIR/../.agent-chat-installed" ]; then
+    AC_HOME=$(cd "$SELF_DIR/../.." && pwd)  # run as <home>/app/bin/agent-chat
+  else
+    AC_HOME=$(normdir "${AGENT_CHAT_HOME:-${INSTALLED_HOME:-$data_root/agent-chat}}")
+  fi
+  CODE="$AC_HOME/app"
+  DATA="${AGENT_CHAT_DATA:-$AC_HOME/data}"
+  WORKSPACE="${AGENT_CHAT_WORKSPACE:-$AC_HOME/workspace}"
+fi
+state_root="${XDG_STATE_HOME:-$HOME/.local/state}"
+case "$state_root" in /*) ;; *) state_root="$HOME/.local/state" ;; esac
+STATE=$(normdir "${AGENT_CHAT_STATE:-$state_root/agent-chat}")
+LOG="$STATE/server.log"
+PIDFILE="$STATE/server-$PORT.pid"   # lines: pid, port, code dir, data dir, workspace
+START_LOCK="$STATE/start-$PORT.lock"
+
+# A value from the install receipt that install.sh writes (empty when there is none).
+receipt() {
+  [ "$MODE" = installed ] && [ -f "$AC_HOME/install.env" ] || return 0
+  awk -v k="$1=" 'index($0, k) == 1 { print substr($0, length(k) + 1); exit }' "$AC_HOME/install.env"
+}
+
+BIN_DIR=$(receipt BIN_DIR)
+BIN_DIR="${BIN_DIR:-$SELF_DIR}"
+
+find_uv() {
+  local c
+  if c=$(command -v uv 2>/dev/null); then printf '%s\n' "$c"; return 0; fi
+  for c in "$(receipt UV)" ${XDG_BIN_HOME:+"$XDG_BIN_HOME/uv"} "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
+    if [ -n "$c" ] && [ -x "$c" ]; then printf '%s\n' "$c"; return 0; fi
+  done
+  return 1
+}
+
+find_tui() {
+  local c
+  if [ -n "${AGENT_CHAT_TUI:-}" ]; then
+    [ -x "$AGENT_CHAT_TUI" ] && printf '%s\n' "$AGENT_CHAT_TUI" && return 0
+    return 1
+  fi
+  if [ "$MODE" = source ]; then
+    for c in "$CODE/tui/target/release/agent-chat-tui" "$CODE/tui/target/debug/agent-chat-tui"; do
+      if [ -x "$c" ]; then printf '%s\n' "$c"; return 0; fi
+    done
+  fi
+  for c in "$(receipt TUI)" "$BIN_DIR/agent-chat-tui" "$SELF_DIR/agent-chat-tui"; do
+    if [ -n "$c" ] && [ -x "$c" ]; then printf '%s\n' "$c"; return 0; fi
+  done
+  command -v agent-chat-tui 2>/dev/null
+}
+
+app_version() { sed -n 's/^VERSION = "\(.*\)"/\1/p' "$CODE/app/main.py" 2>/dev/null || true; }
+
+other_port() { if [ "$PORT" -lt 65535 ]; then echo $((PORT + 1)); else echo $((PORT - 1)); fi; }
+
+# --------------------------------------------------------------------------- locks
+
+# When process PID started, to tell it apart from a later process that got the same number.
+proc_start() {
+  local s
+  local -a f
+  if [ -r "/proc/$1/stat" ]; then
+    s=$(cat "/proc/$1/stat" 2>/dev/null) || return 0
+    read -r -a f <<< "${s##*) }"   # the fields after "pid (command name)"; starttime is the 20th
+    printf '%s' "${f[19]:-}"
+  else
+    ps -o lstart= -p "$1" 2>/dev/null | tr -d ' ' || true
+  fi
+}
+
+# Locks are symlinks (as in install.sh): making one is atomic, and the target names the owner.
+lock_owner_alive() {
+  local pid="${1%%:*}" start="${1#*:}" now
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$pid" 2>/dev/null || return 1
+  [ -n "$start" ] || return 0
+  now=$(proc_start "$pid")
+  [ -z "$now" ] || [ "$now" = "$start" ]
+}
+
+# lock_take PATH: 0 = ours now; 1 = a live process holds it (LOCK_HOLDER); 2 = can't be made.
+lock_take() {
+  local path="$1" holder t i=0
+  LOCK_ME="$$:$(proc_start $$)" LOCK_HOLDER=""
+  while [ "$i" -lt 100 ]; do
+    i=$((i + 1))
+    if ln -s "$LOCK_ME" "$path" 2>/dev/null; then return 0; fi
+    if ! holder=$(readlink "$path" 2>/dev/null); then
+      if [ -e "$path" ] || [ -L "$path" ]; then return 2; fi
+      continue
+    fi
+    if lock_owner_alive "$holder"; then LOCK_HOLDER="${holder%%:*}"; return 1; fi
+    if ln -s "$LOCK_ME" "$path.takeover" 2>/dev/null; then   # stale: remove it, exactly once
+      if [ "$(readlink "$path" 2>/dev/null || true)" = "$holder" ]; then rm -f "$path"; fi
+      rm -f "$path.takeover"
+    else
+      t=$(readlink "$path.takeover" 2>/dev/null || true)
+      if [ -n "$t" ] && ! lock_owner_alive "$t"; then rm -f "$path.takeover"; fi
+      sleep 0.1
+    fi
+  done
+  return 2
+}
+
+HELD_LOCK="" LOCK_ME=""
+release_lock() {
+  if [ -n "$HELD_LOCK" ] && [ "$(readlink "$HELD_LOCK" 2>/dev/null || true)" = "$LOCK_ME" ]; then
+    rm -f "$HELD_LOCK"
+  fi
+  HELD_LOCK=""
+}
+trap release_lock EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# One launcher at a time decides whether to start the server on $PORT, so two `agent-chat`s
+# run at the same moment start one server between them, not two.
+take_start_lock() {
+  local rc i=0 limit=$(( $1 * 10 ))
+  mkdir -p "$STATE" || die "can't create $(pretty "$STATE")"
+  while :; do
+    rc=0; lock_take "$START_LOCK" || rc=$?
+    case "$rc" in
+      0) HELD_LOCK="$START_LOCK"; return 0 ;;
+      1) [ "$i" -lt "$limit" ] || die "another agent-chat (pid $LOCK_HOLDER) has been starting Agent Chat on $URL for over $1s; agent-chat logs shows why" ;;
+      *) die "couldn't create $(pretty "$START_LOCK")" ;;
+    esac
+    sleep 0.1
+    i=$((i + 1))
+  done
+}
+
+# An update (install.sh) holds this lock while it swaps the code: don't start the old code meanwhile.
+wait_for_update() {
+  local lock="$AC_HOME/.install-lock" t i=0
+  [ "$MODE" = installed ] && [ -z "${AGENT_CHAT_INSTALLING:-}" ] || return 0
+  t=$(readlink "$lock" 2>/dev/null) && lock_owner_alive "$t" || return 0
+  say "Waiting for the Agent Chat update (pid ${t%%:*}) to finish..."
+  while t=$(readlink "$lock" 2>/dev/null) && lock_owner_alive "$t"; do
+    [ "$i" -lt 3000 ] || die "the update (pid ${t%%:*}) is still running after 5 minutes. If no update is running, delete $(pretty "$lock")."
+    sleep 0.1
+    i=$((i + 1))
+  done
+}
+
+# --------------------------------------------------------------------------- the server
+
+# Agent Chat answers on $URL (its health reply, not just any {"ok":true}). Sets HEALTH.
+healthy() {
+  HEALTH=$(curl -fsS --noproxy '*' -m 2 "$URL/api/health" 2>/dev/null) || return 1
+  case "$HEALTH" in *'"ok":true'*) ;; *) return 1 ;; esac
+  case "$HEALTH" in *'"version":"'*) ;; *) return 1 ;; esac
+  case "$HEALTH" in *'"runs":'*) return 0 ;; esac
+  return 1
+}
+
+# Something answers on the port (an Agent Chat or not). curl exit 7 = nothing is listening.
+port_taken() {
+  local rc=0
+  curl -s --noproxy '*' -o /dev/null -m 2 "$URL/" 2>/dev/null || rc=$?
+  [ "$rc" -ne 7 ]
+}
+
+# Linux: the uid of the program listening on 127.0.0.1:$PORT (empty when unknown).
+listener_uid() {
+  local hex f
+  local -a files=()
+  for f in /proc/net/tcp /proc/net/tcp6; do [ -r "$f" ] && files+=("$f"); done
+  [ "${#files[@]}" -gt 0 ] || return 0
+  hex=$(printf '%04X' "$PORT")
+  awk -v p=":$hex" '$4 == "0A" && ($2 == "0100007F" p || $2 == "00000000" p ||
+      $2 == "00000000000000000000000000000000" p || $2 == "0000000000000000FFFF00000100007F" p) { print $8; exit }' \
+    "${files[@]}" 2>/dev/null || true
+}
+
+# On a shared machine another user could open this port first: never hand them your chats.
+foreign_listener() {
+  local uid
+  uid=$(listener_uid)
+  [ -n "$uid" ] && [ "$uid" != "$(id -u)" ]
+}
+check_owner() {
+  if foreign_listener; then
+    die "port $PORT on 127.0.0.1 belongs to another user's program (uid $(listener_uid)), so agent-chat won't use it. Pick another port: AGENT_CHAT_PORT=$(other_port) agent-chat"
+  fi
+}
+
+# Is PID the Agent Chat server for PORT (and not some other process that reused the number)?
+is_server_pid() {
+  local cmd=""
+  case "$1" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$1" 2>/dev/null || return 1
+  if [ -r "/proc/$1/cmdline" ]; then cmd=$(tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null || true)
+  else cmd="$(ps -p "$1" -o command= 2>/dev/null || true) "
+  fi
+  case "$cmd" in *"app.main:app "*"--port $2 "*) return 0 ;; esac
+  return 1
+}
+
+# The server an agent-chat launcher started on $PORT, if it is still running: sets PF_PID and
+# PF_CODE (the code it runs; another checkout or install may have started it). Never deletes
+# the file: a launcher that is starting the server may have written it a moment ago.
+read_pidfile() {
+  local port=""
+  PF_PID="" PF_CODE=""
+  [ -f "$PIDFILE" ] || return 1
+  { IFS= read -r PF_PID; IFS= read -r port; IFS= read -r PF_CODE; } < "$PIDFILE" || true
+  [ "$port" = "$PORT" ] && is_server_pid "$PF_PID" "$PORT"
+}
+
+# The pid of the server this launcher (this code dir) started on $PORT.
+managed_pid() {
+  read_pidfile && [ "$PF_CODE" = "$CODE" ] && printf '%s\n' "$PF_PID"
+}
+
+drop_pidfile() {  # only if it still names PID
+  if [ -f "$PIDFILE" ] && [ "$(sed -n 1p "$PIDFILE" 2>/dev/null)" = "$1" ]; then rm -f "$PIDFILE"; fi
+}
+
+log_lines() { if [ -f "$LOG" ]; then wc -l < "$LOG" | tr -d ' '; else echo 0; fi; }
+
+# Report a failed start with what was written to the log since this launcher began (not an
+# older run's output).
+fail_start() {
+  local new
+  printf '%sagent-chat:%s %s\n' "$C_RED" "$C_OFF" "$1" >&2
+  new=$(tail -n "+$((${LOG_MARK:-0} + 1))" "$LOG" 2>/dev/null | tail -n 20)
+  if [ -n "$new" ]; then
+    printf '%slast lines of %s:%s\n' "$C_DIM" "$(pretty "$LOG")" "$C_OFF" >&2
+    printf '%s\n' "$new" | sed 's/^/  | /' >&2
+  else
+    printf '%snothing new in %s%s\n' "$C_DIM" "$(pretty "$LOG")" "$C_OFF" >&2
+  fi
+  exit 1
+}
+
+# Make sure the app answers on $PORT. Reuses any running one (the systemd service, run.sh, or one
+# started earlier); otherwise starts it in the background, detached from this terminal.
+ensure_server() {
+  STARTED=0
+  LOG_MARK=$(log_lines)
+  if healthy; then check_owner; return 0; fi
+  local uv pid timeout="${AGENT_CHAT_START_TIMEOUT:-90}"
+  case "$timeout" in ''|*[!0-9]*) timeout=90 ;; esac
+  wait_for_update
+  take_start_lock "$timeout"
+  if healthy; then release_lock; check_owner; return 0; fi    # another agent-chat just started it
+  if read_pidfile; then   # started a moment ago and still coming up: wait for that one
+    wait_healthy "$PF_PID" "$timeout"
+    release_lock
+    return 0
+  fi
+  if port_taken; then
+    die "something that isn't Agent Chat is using port $PORT. Use another one: AGENT_CHAT_PORT=$(other_port) agent-chat"
+  fi
+  [ -f "$CODE/app/main.py" ] || die "Agent Chat isn't installed at $(pretty "$CODE"). Reinstall it with the install command from $(site)"
+  uv=$(find_uv) || die "uv isn't installed (https://docs.astral.sh/uv/); it runs the Python side of Agent Chat"
+  printf '\n== %s  starting Agent Chat %s on %s  (code: %s)\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$(app_version)" "$URL" "$CODE" >> "$LOG"
+  local -a run=("$uv" run --frozen)
+  [ "$MODE" = source ] && run=("$uv" run)   # developers: let uv refresh the lock as usual
+  # --timeout-graceful-shutdown: an open browser tab or client holds an event stream; without
+  # it, stopping would wait for those forever.
+  run+=(uvicorn app.main:app --host 127.0.0.1 --port "$PORT" --log-level warning --timeout-graceful-shutdown 2)
+  # A session of its own (setsid), or at least a process group (job control where there's no
+  # setsid, as on macOS): closing this terminal or quitting the client leaves it running, and
+  # `stop` can signal the whole group.
+  local jobctl=0
+  if ! command -v setsid >/dev/null 2>&1; then set -m; jobctl=1; fi
+  (
+    cd "$CODE"
+    unset VIRTUAL_ENV
+    export AGENT_CHAT_DATA="$DATA" AGENT_CHAT_WORKSPACE="$WORKSPACE"
+    if [ "$jobctl" = 0 ]; then exec setsid nohup "${run[@]}"; fi
+    exec nohup "${run[@]}"
+  ) >> "$LOG" 2>&1 < /dev/null &
+  pid=$!
+  if [ "$jobctl" = 1 ]; then set +m; fi
+  printf '%s\n%s\n%s\n%s\n%s\n' "$pid" "$PORT" "$CODE" "$DATA" "$WORKSPACE" > "$PIDFILE.new.$$"
+  mv -f "$PIDFILE.new.$$" "$PIDFILE"
+  wait_healthy "$pid" "$timeout"
+  STARTED=1
+  release_lock
+}
+
+wait_healthy() {
+  local pid="$1" timeout="$2" i=0
+  while ! healthy; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      drop_pidfile "$pid"
+      fail_start "Agent Chat stopped while starting up."
+    fi
+    if [ "$i" -ge $((timeout * 5)) ]; then
+      fail_start "Agent Chat (pid $pid) didn't answer on $URL within ${timeout}s. It may still be starting: agent-chat logs -f (or agent-chat stop)."
+    fi
+    sleep 0.2
+    i=$((i + 1))
+  done
+}
+
+# One line when the model server can't be reached, saying where the app looked. It has 0.6 s:
+# a reply from a model server that is up takes milliseconds, and opening the client shouldn't
+# wait for a remote host that is off (`agent-chat status` waits longer).
+model_check() {
+  local info rc=0 base
+  info=$(curl -fsS --noproxy '*' -m 0.6 "$URL/api/server" 2>/dev/null) || rc=$?
+  case "$rc" in
+    0)
+      case "$info" in *'"ok":true'*) return 0 ;; esac
+      base=$(printf '%s' "$info" | sed -n 's/.*"base_url":"\([^"]*\)".*/\1/p')
+      warn "no model server answers at ${base:-the configured address}. Start one there (e.g. llama-server -m model.gguf --jinja), or set the address in Settings." ;;
+    28)  # the app is still waiting on the model server: it's down or far away
+      base=$(curl -fsS --noproxy '*' -m 1 "$URL/api/state" 2>/dev/null | sed -n 's/.*"base_url":"\([^"]*\)".*/\1/p' || true)
+      warn "the model server at ${base:-the configured address} isn't answering. Start it there, or set the address in Settings." ;;
+  esac
+  return 0
+}
+
+# Where install.sh came from (recorded at install time), for updates.
+site() {
+  local s="${AGENT_CHAT_SITE:-$(receipt SITE)}"
+  printf '%s' "${s:-https://github.com/mandoof1/agent-chat}"
+}
+
+# Run a command fully detached: no terminal, its own session, and deaf to the hangup that comes
+# when the terminal this launcher ran in closes right after it exits (xterm -e agent-chat web).
+spawn_detached() {
+  trap '' HUP
+  if command -v setsid >/dev/null 2>&1; then setsid "$@" >/dev/null 2>&1 < /dev/null &
+  else nohup "$@" >/dev/null 2>&1 < /dev/null &
+  fi
+}
+
+open_url() {
+  local url="$1" b="${BROWSER:-}" part subst=0
+  local -a cmd=() parts=()
+  [ "${AGENT_CHAT_NO_BROWSER:-}" = 1 ] && return 0
+  b="${b%%:*}"    # BROWSER may list several, separated by ':'; use the first
+  if [ -n "${b// /}" ]; then
+    read -r -a parts <<< "$b"
+    for part in "${parts[@]}"; do
+      case "$part" in *%s*) part="${part//%s/$url}"; subst=1 ;; esac
+      cmd+=("$part")
+    done
+    [ "$subst" = 1 ] || cmd+=("$url")
+    spawn_detached "${cmd[@]}"
+  elif [ "$(uname -s)" = Darwin ]; then
+    open "$url" >/dev/null 2>&1 || true
+  elif [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+    say "${C_DIM}(no display here: open the address in a browser yourself)${C_OFF}"
+  elif command -v xdg-open >/dev/null 2>&1; then
+    spawn_detached xdg-open "$url"
+  fi
+}
+
+started_note() {
+  [ "${STARTED:-0}" = 1 ] || return 0
+  say "${C_DIM}Started Agent Chat in the background on $URL (agent-chat stop stops it).${C_OFF}"
+}
+
+stop_pid() {  # TERM, then up to 15 s for a clean exit (the app ends its streams within ~2 s)
+  local i=0
+  kill -TERM "$1" 2>/dev/null || true
+  while kill -0 "$1" 2>/dev/null && [ "$i" -lt 75 ]; do sleep 0.2; i=$((i + 1)); done
+  if kill -0 "$1" 2>/dev/null; then kill -KILL -- "-$1" 2>/dev/null || kill -KILL "$1" 2>/dev/null || true; fi
+}
+
+# --------------------------------------------------------------------------- commands
+
+cmd_tui() {
+  local a tui chat="" want_chat=0 client_only=""
+  for a in "$@"; do
+    case "$a" in
+      --url|--url=*)   # pointed at a server elsewhere: just run the client
+        tui=$(find_tui) || die "the terminal client (agent-chat-tui) isn't installed"
+        exec "$tui" "$@" ;;
+    esac
+  done
+  # Check the flags before starting anything, so a typo doesn't leave a server behind.
+  for a in "$@"; do
+    if [ "$want_chat" = 1 ]; then chat="$a"; want_chat=0; continue; fi
+    case "$a" in
+      --light|--plain|--quiet) client_only="$client_only $a" ;;
+      --chat) want_chat=1 ;;
+      --chat=*) chat="${a#--chat=}" ;;
+      -h|--help) cmd_help; return 0 ;;
+      -V|--version) cmd_version; return 0 ;;
+      *) die "unknown option '$a'. The options are --light, --plain, --quiet, --chat ID and --url URL (agent-chat help)" ;;
+    esac
+  done
+  [ "$want_chat" = 0 ] || die "--chat needs a chat id: agent-chat --chat ID"
+  if ! tui=$(find_tui); then
+    say "The terminal client (agent-chat-tui) isn't installed, so here's the web UI instead."
+    if [ -n "$client_only" ]; then say "${C_DIM}(ignoring${client_only}: those are for the terminal client)${C_OFF}"; fi
+    cmd_web "$chat"
+    return
+  fi
+  if [ ! -t 0 ] || [ ! -t 1 ]; then
+    die "the terminal client needs a terminal. Use agent-chat web or agent-chat start instead."
+  fi
+  ensure_server
+  started_note
+  model_check
+  release_lock
+  exec "$tui" --url "$URL" "$@"
+}
+
+cmd_web() {
+  local chat="${1:-}" url="$URL/"
+  if [ -n "$chat" ]; then
+    case "$chat" in
+      *[!A-Za-z0-9_-]*) warn "'$chat' isn't a chat id; opening the start page" ;;
+      *) url="$URL/#/chat/$chat" ;;
+    esac
+  fi
+  ensure_server
+  started_note
+  model_check
+  say "Agent Chat: ${C_BLUE}$url${C_OFF}"
+  open_url "$url"
+}
+
+cmd_start() {
+  ensure_server
+  if [ "$STARTED" = 1 ]; then
+    say "Started Agent Chat on $URL (pid $(managed_pid || echo '?'), log $(pretty "$LOG"))"
+  else
+    say "Agent Chat is already running on $URL"
+  fi
+  model_check
+}
+
+systemd_active() {
+  command -v systemctl >/dev/null 2>&1 && systemctl --user is-active --quiet agent-chat.service 2>/dev/null
+}
+
+cmd_stop() {
+  local pid
+  if ! read_pidfile; then
+    if healthy; then
+      warn "the Agent Chat on $URL wasn't started by agent-chat, so it's left running."
+      if systemd_active; then say "It's the systemd service: systemctl --user stop agent-chat"; fi
+      return 1
+    fi
+    say "Agent Chat isn't running on $URL"
+    return 0
+  fi
+  pid="$PF_PID"
+  if [ "$PF_CODE" != "$CODE" ]; then
+    warn "the Agent Chat on $URL was started from $(pretty "$PF_CODE"), not this one ($(pretty "$CODE")); stop it with $(pretty "$PF_CODE/bin/agent-chat") stop"
+    return 1
+  fi
+  stop_pid "$pid"
+  drop_pidfile "$pid"
+  if healthy; then
+    warn "stopped pid $pid, but an Agent Chat still answers on $URL (one agent-chat didn't start)"
+    return 1
+  fi
+  say "Stopped Agent Chat on $URL (pid $pid)"
+}
+
+cmd_restart() {
+  if ! managed_pid >/dev/null && healthy; then
+    die "the Agent Chat on $URL wasn't started by this agent-chat; restart it the way it was started (systemctl --user restart agent-chat?)"
+  fi
+  cmd_stop >/dev/null
+  cmd_start
+}
+
+cmd_status() {
+  local info base kind models tui running=0 v hv
+  v=$(app_version)
+  if [ "$MODE" = source ]; then
+    say "${C_BOLD}Agent Chat ${v:-?}${C_OFF}  source checkout"
+  else
+    say "${C_BOLD}Agent Chat ${v:-?}${C_OFF}  installed $(receipt VERSION)"
+  fi
+  if healthy; then
+    running=1
+    if foreign_listener; then
+      say "  server     ${C_AMBER}another user's program${C_OFF} answers on $URL (uid $(listener_uid)): pick another port with AGENT_CHAT_PORT"
+    elif read_pidfile; then
+      if [ "$PF_CODE" = "$CODE" ]; then say "  server     ${C_GREEN}running${C_OFF} on $URL  (pid $PF_PID, started by agent-chat)"
+      else say "  server     ${C_GREEN}running${C_OFF} on $URL  (pid $PF_PID, started from $(pretty "$PF_CODE"))"
+      fi
+    elif systemd_active; then
+      say "  server     ${C_GREEN}running${C_OFF} on $URL  (systemd service agent-chat)"
+    else
+      say "  server     ${C_GREEN}running${C_OFF} on $URL  (not started by agent-chat)"
+    fi
+    hv=$(printf '%s' "$HEALTH" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
+    if [ -n "$hv" ] && [ -n "$v" ] && [ "$hv" != "$v" ] && read_pidfile && [ "$PF_CODE" = "$CODE" ]; then
+      say "             ${C_AMBER}it runs $hv; the code here is $v${C_OFF} (agent-chat restart loads it)"
+    fi
+    info=$(curl -fsS --noproxy '*' -m 6 "$URL/api/server" 2>/dev/null || true)
+    base=$(printf '%s' "$info" | sed -n 's/.*"base_url":"\([^"]*\)".*/\1/p')
+    case "$info" in
+      *'"ok":true'*)
+        kind=$(printf '%s' "$info" | sed -n 's/.*"kind":"\([^"]*\)".*/\1/p')
+        models=$(printf '%s' "$info" | sed -n 's/.*"models":\["\([^"]*\)".*/\1/p')
+        say "  model      ${C_GREEN}online${C_OFF} at $base${models:+  ($models)}${kind:+  [$kind]}" ;;
+      "") say "  model      unknown" ;;
+      *)  say "  model      ${C_AMBER}not reachable${C_OFF} at ${base:-?}  (change it in Settings)" ;;
+    esac
+  elif read_pidfile; then
+    say "  server     ${C_AMBER}starting, or not answering${C_OFF} on $URL  (pid $PF_PID; agent-chat logs)"
+  elif port_taken; then
+    say "  server     ${C_AMBER}port $PORT is used by another program${C_OFF}  (use another: AGENT_CHAT_PORT=$(other_port) agent-chat)"
+  else
+    say "  server     stopped  (agent-chat start, or just agent-chat)"
+  fi
+  say "  code       $(pretty "$CODE")"
+  say "  data       $(pretty "$DATA")"
+  say "  workspace  $(pretty "$WORKSPACE")"
+  if tui=$(find_tui); then say "  client     $(pretty "$tui")"; else say "  client     not installed (agent-chat web is the way in)"; fi
+  say "  log        $(pretty "$LOG")"
+  [ "$running" = 1 ] || return 3
+}
+
+cmd_logs() {
+  if [ ! -f "$LOG" ]; then
+    say "No log yet at $(pretty "$LOG")."
+    if systemd_active; then say "The systemd service logs to the journal: journalctl --user -u agent-chat"; fi
+    return 0
+  fi
+  case "${1:-}" in
+    -f|--follow) exec tail -n 50 -F "$LOG" ;;
+    "") tail -n 100 "$LOG" ;;
+    *) die "usage: agent-chat logs [-f]" ;;
+  esac
+}
+
+cmd_update() {
+  [ "$MODE" = installed ] || die "this is a source checkout ($(pretty "$CODE")): update it with git pull."
+  local s tmp rc=0
+  local -a proto=()
+  s="${AGENT_CHAT_SITE:-$(receipt SITE)}"
+  s="${s%/}"
+  [ -n "$s" ] || die "don't know which site this was installed from: set AGENT_CHAT_SITE=https://... and run agent-chat update again"
+  case "$s" in https://*) proto=(--proto '=https' --proto-redir '=https' --tlsv1.2) ;; esac
+  tmp=$(mktemp "${TMPDIR:-/tmp}/agent-chat-install.XXXXXX")
+  say "Updating from $s/install.sh"
+  if ! curl -fsSL --retry 2 ${proto[@]+"${proto[@]}"} -o "$tmp" "$s/install.sh"; then
+    rm -f "$tmp"
+    die "couldn't download $s/install.sh"
+  fi
+  # The installer replaces this file by renaming a new one over it; this copy keeps running.
+  AGENT_CHAT_HOME="$AC_HOME" AGENT_CHAT_BIN="$BIN_DIR" AGENT_CHAT_SITE="$s" \
+    AGENT_CHAT_VERSION="${1:-${AGENT_CHAT_VERSION:-}}" bash "$tmp" || rc=$?
+  rm -f "$tmp"
+  exit "$rc"
+}
+
+# The install root an installed launcher belongs to (written by install.sh; empty if none).
+launcher_home() { sed -n 's/^# install root: //p' "$1" 2>/dev/null | head -n 1; }
+
+cmd_uninstall() {
+  local yes=0 purge=0 a ans tui unit f h cache n uv_ours uv_path rescue=""
+  local -a launchers=() inner=()
+  for a in "$@"; do
+    case "$a" in
+      -y|--yes) yes=1 ;;
+      --purge) purge=1 ;;
+      *) die "usage: agent-chat uninstall [-y] [--purge]" ;;
+    esac
+  done
+  [ "$MODE" = installed ] || die "this is a source checkout ($(pretty "$CODE")); nothing is installed. Delete the folder to remove it."
+  # Refuse anything that doesn't look like an install made by install.sh.
+  case "$AC_HOME" in ""|/|"$(normdir "$HOME")") die "refusing to uninstall from '$AC_HOME'" ;; esac
+  [ -f "$CODE/.agent-chat-installed" ] || [ -f "$AC_HOME/install.env" ] || die "no Agent Chat install found at $(pretty "$AC_HOME")"
+  tui=$(receipt TUI)
+  uv_ours=$(receipt UV_INSTALLED_BY_INSTALLER)
+  uv_path=$(receipt UV)
+  cache="${XDG_CACHE_HOME:-$HOME/.cache}/agent-chat"
+  # The launchers of this install: the one on PATH (from the receipt) and this one, unless this
+  # is the copy inside app/ (that goes with the code).
+  for f in "$BIN_DIR/agent-chat" "$SELF"; do
+    [ -f "$f" ] || continue
+    case "$f" in "$CODE"/*) continue ;; esac
+    grep -q '^INSTALLED_HOME=' "$f" 2>/dev/null || continue
+    h=$(launcher_home "$f")
+    [ "$h" = "$AC_HOME" ] || { [ -z "$h" ] && [ "$f" = "$SELF" ]; } || continue
+    case " ${launchers[*]-} " in *" $f "*) ;; *) launchers+=("$f") ;; esac
+  done
+  # data/ or workspace/ inside the code folder means the app was run from there without
+  # AGENT_CHAT_DATA (run.sh, install-service.sh): that is the user's data too, and removing the
+  # code must not take it along. Kept like an update keeps it (moved to rescued-<time>/).
+  for f in data workspace; do
+    if [ -d "$CODE/$f" ] && [ -n "$(ls -A "$CODE/$f" 2>/dev/null)" ]; then inner+=("$f"); fi
+  done
+
+  say "This removes:"
+  say "  $(pretty "$CODE")  (the app)"
+  for f in ${launchers[@]+"${launchers[@]}"}; do say "  $(pretty "$f")  (the launcher)"; done
+  if [ -n "$tui" ] && [ -f "$tui" ]; then say "  $(pretty "$tui")  (the terminal client)"; fi
+  say "  its server log and pid files in $(pretty "$STATE"), and the client's build cache"
+  if [ "$purge" = 1 ]; then
+    say "  ${C_AMBER}$(pretty "$AC_HOME/data") and $(pretty "$AC_HOME/workspace"): your chats, agents, memory, settings and the workspace${C_OFF}"
+    for f in ${inner[@]+"${inner[@]}"}; do
+      say "  ${C_AMBER}$(pretty "$CODE/$f"): $f the app kept in its own folder (it was run from there, e.g. with run.sh)${C_OFF}"
+    done
+    for f in "$AC_HOME"/rescued-*; do
+      if [ -d "$f" ]; then say "  ${C_AMBER}$(pretty "$f"): data an earlier update or uninstall moved out of the app folder${C_OFF}"; fi
+    done
+    case "$DATA" in "$AC_HOME/data"|"$CODE"/*) ;; *) say "It leaves $(pretty "$DATA") (AGENT_CHAT_DATA) alone." ;; esac
+  else
+    say "It keeps your data: $(pretty "$DATA") and $(pretty "$WORKSPACE")"
+    for f in ${inner[@]+"${inner[@]}"}; do
+      say "It also keeps $(pretty "$CODE/$f"), the $f the app kept in its own folder (it was run from there, e.g. with run.sh): that moves to $(pretty "$AC_HOME")/rescued-<date-time>/$f"
+    done
+  fi
+  if [ "$yes" != 1 ]; then
+    (: </dev/tty) 2>/dev/null || die "no terminal to confirm on: run agent-chat uninstall -y"
+    printf 'Remove Agent Chat? [y/N] '
+    read -r ans </dev/tty || ans=""
+    case "$ans" in y|Y|yes|YES) ;; *) say "Nothing removed."; return 0 ;; esac
+  fi
+
+  # Stop the servers that run this install's code (on any port).
+  for f in "$STATE"/server-*.pid; do
+    [ -f "$f" ] || continue
+    { IFS= read -r a; IFS= read -r n; IFS= read -r h; } < "$f" || true
+    [ "$h" = "$CODE" ] || continue
+    if is_server_pid "$a" "$n"; then stop_pid "$a"; fi
+    rm -f "$f"
+  done
+  # A systemd unit that runs this install would fail from now on: remove it too.
+  unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/agent-chat.service"
+  if [ -f "$unit" ] && grep -q "^WorkingDirectory=$CODE\$" "$unit" 2>/dev/null; then
+    systemctl --user disable --now agent-chat.service >/dev/null 2>&1 || true
+    rm -f "$unit"
+    systemctl --user daemon-reload >/dev/null 2>&1 || true
+    say "Removed the systemd service that ran it."
+  fi
+  # A server started by hand in the code folder (./run.sh) isn't ours to stop, and it would go on
+  # writing into a deleted folder. (-ef: /proc/PID/cwd is the physical path; Linux only.)
+  n=""
+  for f in /proc/[0-9]*; do
+    [ "$f/cwd" -ef "$CODE" ] || continue
+    if tr '\0' ' ' < "$f/cmdline" 2>/dev/null | grep -q 'app\.main:app'; then n="$n ${f#/proc/}"; fi
+  done
+  [ -z "$n" ] || die "Agent Chat is still running from $(pretty "$CODE") (pid$n; ./run.sh in a terminal?): stop it, then run agent-chat uninstall again. The app is not removed."
+  # Now that its servers are stopped, move the data out of the code folder (a new folder each
+  # time: an update in the same second may have made rescued-<that second> already).
+  if [ "$purge" != 1 ] && [ "${#inner[@]}" -gt 0 ]; then
+    h="$AC_HOME/rescued-$(date +%Y%m%d-%H%M%S)" rescue="$h" n=1
+    until mkdir "$rescue" 2>/dev/null; do
+      n=$((n + 1))
+      [ "$n" -le 20 ] || die "couldn't make a folder in $(pretty "$AC_HOME") to move the app's data/ into; the app is not removed."
+      rescue="$h-$n"
+    done
+    for f in "${inner[@]}"; do
+      mv "$CODE/$f" "$rescue/$f" || die "couldn't move $(pretty "$CODE/$f") to $(pretty "$rescue"); the app is not removed."
+    done
+  fi
+
+  # Only what Agent Chat created: AGENT_CHAT_HOME, AGENT_CHAT_STATE and the cache dir may hold
+  # other things.
+  rm -rf "$CODE" "$AC_HOME/install.env" "$AC_HOME/.install.env.new" "$AC_HOME/.app-new" "$AC_HOME/.app-old" \
+    "$AC_HOME/.install-lock" "$AC_HOME/.install-lock.takeover" "$AC_HOME/.install.lock"
+  if [ -n "$tui" ] && [ -f "$tui" ]; then rm -f "$tui"; fi
+  for f in "$STATE"/start-*.lock; do
+    if [ -L "$f" ] && ! lock_owner_alive "$(readlink "$f" 2>/dev/null || true)"; then rm -f "$f"; fi
+  done
+  if ! ls "$STATE"/server-*.pid >/dev/null 2>&1; then rm -f "$LOG"; fi   # other installs may still log there
+  rmdir "$STATE" 2>/dev/null || true
+  rm -rf "$cache/tui-target"
+  rmdir "$cache" 2>/dev/null || true
+  if [ "$purge" = 1 ]; then
+    rm -rf "$AC_HOME/data" "$AC_HOME/workspace" "$AC_HOME"/rescued-*
+    rm -rf "${XDG_CONFIG_HOME:-$HOME/.config}/agent-chat-tui"
+    if [ "$(uname -s)" = Darwin ]; then rm -rf "$HOME/Library/Application Support/agent-chat-tui"; fi
+    if rmdir "$AC_HOME" 2>/dev/null; then say "Agent Chat and its data are removed."
+    else say "Agent Chat and its data are removed. $(pretty "$AC_HOME") has other files in it, so it stays."
+    fi
+    if [ "$uv_ours" = 1 ]; then
+      say "uv, which the installer added, is still in $(pretty "$(dirname "${uv_path:-$HOME/.local/bin/uv}")") (uv and uvx). If nothing else uses it: uv cache clean, then delete those two files."
+    else
+      say "uv's download cache still holds the Python packages Agent Chat used; uv cache clean empties it (for every uv project)."
+    fi
+  else
+    say "Agent Chat is removed. Your data is still in $(pretty "$DATA") and $(pretty "$WORKSPACE"); delete them to remove it too."
+    if [ -n "$rescue" ]; then
+      say "What the app kept in its own folder is in $(pretty "$rescue"). To use it with a new install, move it into $(pretty "$DATA") and $(pretty "$WORKSPACE") while the app is stopped."
+    fi
+  fi
+  for f in ${launchers[@]+"${launchers[@]}"}; do rm -f "$f"; done
+  exit 0
+}
+
+cmd_version() {
+  local tui v
+  v=$(app_version)
+  if [ "$MODE" = source ]; then say "agent-chat ${v:-?} (source checkout $(pretty "$CODE"))"
+  else say "agent-chat ${v:-?} (installed $(receipt VERSION))"
+  fi
+  if tui=$(find_tui); then "$tui" --version 2>/dev/null || true; fi
+}
+
+cmd_help() {
+  cat <<EOF
+${C_BOLD}agent-chat${C_OFF}: local agents with their own tools, live traces and approvals.
+
+  agent-chat [flags]       open the terminal client, starting the app if needed
+                           flags: --light  --plain  --quiet  --chat ID  --url URL
+  agent-chat web           start the app and open it in your browser
+  agent-chat start         start the app in the background
+  agent-chat stop          stop the app (one that agent-chat started)
+  agent-chat restart       stop, then start
+  agent-chat status        app, model server, folders
+  agent-chat logs [-f]     the app's log ($(pretty "$LOG"))
+  agent-chat update [VER]  install the latest (or a given) release; keeps your data
+  agent-chat uninstall     remove the app; keeps your data unless --purge (-y: don't ask)
+  agent-chat version       versions of the app and the terminal client
+
+The app runs on $URL (AGENT_CHAT_PORT changes the port). It needs a model server with an
+OpenAI-compatible API, by default llama-server on http://127.0.0.1:8080/v1; change it in Settings.
+Data: $(pretty "$DATA")
+EOF
+}
+
+main() {
+  local sub="${1:-}"
+  case "$sub" in
+    web)        shift; [ $# = 0 ] || die "usage: agent-chat web"; cmd_web ;;
+    start)      shift; cmd_start ;;
+    stop)       shift; cmd_stop ;;
+    restart)    shift; cmd_restart ;;
+    status)     shift; cmd_status ;;
+    logs|log)   shift; cmd_logs "$@" ;;
+    update)     shift; cmd_update "$@" ;;
+    uninstall)  shift; cmd_uninstall "$@" ;;
+    version|-V|--version) cmd_version ;;
+    help|-h|--help) cmd_help ;;
+    ""|-*)      cmd_tui "$@" ;;
+    *)          die "unknown command '$sub' (agent-chat help lists them)" ;;
+  esac
+}
+
+main "$@"; exit $?

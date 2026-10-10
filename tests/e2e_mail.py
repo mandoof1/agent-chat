@@ -3,6 +3,7 @@ import asyncio, json, os
 import httpx
 
 B = os.environ.get("AC_URL", "http://127.0.0.1:8767")
+MOCK = os.environ.get("MOCK_URL", "http://127.0.0.1:8766/v1")
 
 
 async def turn(c, chat_id, content, approve=None):
@@ -25,7 +26,7 @@ async def turn(c, chat_id, content, approve=None):
 
 async def main():
     async with httpx.AsyncClient(timeout=None, headers={"X-Agent-Chat": "1"}) as c:
-        await c.put(f"{B}/api/settings", json={"base_url": "http://127.0.0.1:8766/v1", "auto_memory": False})
+        await c.put(f"{B}/api/settings", json={"base_url": MOCK, "auto_memory": False})
         agents = {a["id"]: a for a in (await c.get(f"{B}/api/state")).json()["agents"]}
         print("Mail agent installed by migration:", "mail" in agents, agents.get("mail", {}).get("tools"))
         print("email config (password hidden):", {k: v for k, v in (await c.get(f"{B}/api/email")).json().items() if k in ("username", "password", "has_password", "configured")})

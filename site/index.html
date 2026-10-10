@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Chat · install</title>
+<meta name="description" content="A local multi-agent chat app for llama-server and other OpenAI-compatible model servers. One command installs it on Linux or macOS; agent-chat opens it in your terminal.">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f2f3f7" media="(prefers-color-scheme: light)">
+<meta property="og:title" content="Agent Chat">
+<meta property="og:description" content="Agents on your own model, with their own tools, live traces and approvals. Install with one command.">
+<meta property="og:image" content="https://raw.githubusercontent.com/mandoof1/agent-chat/main/docs/img/hero.png">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preload" href="fonts/BricolageGrotesque-var-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="fonts/fonts.css">
+<style>
+/* The app's "trace console" look: dark first, one blue accent, amber only for what needs you. */
+:root {
+  --bg: #0b0d12; --surface: #11141b; --surface-2: #171b24; --surface-3: #1e2330;
+  --line: #242a36; --line-2: #323a4a;
+  --text: #e6e9ef; --muted: #8b93a7; --faint: #5a6274;
+  --accent: #4d7cff; --accent-soft: rgba(77, 124, 255, .14);
+  --amber: #ffb020; --amber-soft: rgba(255, 176, 32, .1);
+  --ok: #3ddc97;
+  --code-bg: #090b0f; --code-text: #d6dbe6; --code-line: #262d3b;
+  --font: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "JetBrains Mono", Menlo, monospace;
+  --r: 8px;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f2f3f7; --surface: #ffffff; --surface-2: #eceef3; --surface-3: #e1e4eb;
+    --line: #d8dce5; --line-2: #c3c9d6;
+    --text: #14171f; --muted: #5f6676; --faint: #8f95a5;
+    --accent: #2a5bff; --accent-soft: rgba(42, 91, 255, .1);
+    --amber: #b06f05; --amber-soft: rgba(176, 111, 5, .08);
+    --ok: #178a58;
+    --code-bg: #15181f; --code-text: #d6dbe6; --code-line: #2a3140;
+    color-scheme: light;
+  }
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-padding-top: 16px; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 16px/1.6 var(--font); font-optical-sizing: auto; -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); text-underline-offset: 3px; text-decoration-thickness: 1px; }
+a:hover { text-decoration-thickness: 2px; }
+code, kbd, pre { font-family: var(--mono); }
+p code, li code, dd code, figcaption code {
+  font-size: .86em; background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 4px; padding: .05em .35em; white-space: nowrap;
+}
+img { max-width: 100%; height: auto; display: block; }
+.mono { font-family: var(--mono); }
+.wrap { width: 100%; max-width: 1080px; margin: 0 auto; padding: 0 16px; }
+@media (min-width: 720px) { .wrap { padding: 0 32px; } }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+/* ------------------------------------------------------------------ top bar */
+.bar { border-bottom: 1px solid var(--line); }
+.bar .wrap { display: flex; align-items: center; gap: 16px; height: 60px; }
+.brand { display: flex; align-items: center; gap: 10px; color: var(--text); text-decoration: none; font-weight: 650; font-size: 17px; letter-spacing: -.01em; }
+.brand svg { width: 26px; height: 26px; flex: none; }
+.bar nav { margin-left: auto; display: flex; gap: 18px; font-size: 14.5px; }
+.bar nav a { color: var(--muted); text-decoration: none; }
+.bar nav a:hover { color: var(--text); }
+
+/* ------------------------------------------------------------------ hero */
+.hero { padding-top: 56px; padding-bottom: 40px; }
+@media (min-width: 720px) { .hero { padding-top: 88px; padding-bottom: 56px; } }
+.meta { margin: 0 0 22px; color: var(--muted); font-size: 12.5px; letter-spacing: .01em; display: flex; flex-wrap: wrap; gap: 4px 0; }
+.meta span { white-space: nowrap; }
+.meta span:not(:last-child)::after { content: "·"; margin: 0 .6em; color: var(--faint); }
+h1 {
+  margin: 0; font-size: clamp(2.5rem, 8.2vw, 5.1rem); line-height: .97; font-weight: 750;
+  letter-spacing: -.045em; text-wrap: balance;
+}
+h1 span { display: block; color: var(--muted); font-weight: 600; }
+.lede { margin: 26px 0 0; max-width: 62ch; font-size: 1.1rem; color: color-mix(in srgb, var(--text) 82%, var(--muted)); }
+
+/* ------------------------------------------------------------------ command blocks */
+.cmd {
+  display: flex; align-items: flex-start; gap: 12px; margin: 0;
+  background: var(--code-bg); color: var(--code-text); border: 1px solid var(--code-line);
+  border-radius: var(--r); padding: 12px 12px 12px 16px; font-size: 14.5px; line-height: 1.55;
+}
+.cmd code { flex: 1; min-width: 0; padding: 3px 0; white-space: pre-wrap; overflow-wrap: anywhere; background: none; border: 0; border-radius: 0; font-size: inherit; }
+.cmd .ps { color: var(--accent); user-select: none; padding: 3px 0; }
+@media (prefers-color-scheme: light) { .cmd .ps { color: #7d9dff; } }
+.copy {
+  flex: none; font: 500 12.5px/1 var(--mono); color: var(--code-text); cursor: pointer;
+  background: #1e2330; border: 1px solid #323a4a; border-radius: 5px; padding: 7px 10px; min-width: 64px;
+}
+.copy:hover { border-color: #4d7cff; }
+.copy.done { color: #3ddc97; border-color: rgba(61, 220, 151, .5); }
+.install { margin-top: 34px; max-width: 760px; }
+.install .cmd { font-size: 15px; padding: 14px 14px 14px 18px; box-shadow: 0 0 0 4px var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 45%, var(--code-line)); }
+.install .note { margin: 14px 0 0; color: var(--muted); font-size: 14.5px; }
+
+/* ------------------------------------------------------------------ screenshots */
+.shot { margin: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--surface); }
+.shot figcaption { padding: 10px 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13.5px; }
+.hero-shot { box-shadow: 0 30px 70px -40px rgba(0, 0, 0, .9); }
+@media (prefers-color-scheme: light) { .hero-shot { box-shadow: 0 24px 60px -36px rgba(20, 23, 31, .4); } }
+.shots { display: grid; gap: 16px; }
+@media (min-width: 900px) { .shots { grid-template-columns: 1fr 1fr; } }
+
+/* ------------------------------------------------------------------ sections */
+.block { padding-top: 72px; }
+.block > h2, .block > .wrap > h2 { margin: 0 0 8px; font-size: clamp(1.6rem, 4vw, 2.1rem); font-weight: 700; letter-spacing: -.03em; line-height: 1.15; }
+.block .intro { margin: 0 0 26px; color: var(--muted); max-width: 64ch; }
+h3 { margin: 0; font-size: 17.5px; font-weight: 650; letter-spacing: -.01em; line-height: 1.3; }
+
+/* three steps, drawn as a trace: a line in the accent with each step hanging off it */
+.trace { list-style: none; margin: 0; padding: 0 0 0 30px; max-width: 760px; }
+.trace li { position: relative; padding: 0 0 30px; }
+.trace li::before {
+  content: ""; position: absolute; left: -23px; top: 22px; bottom: -2px; width: 2px;
+  background: color-mix(in srgb, var(--accent) 55%, var(--line));
+}
+.trace li:last-child { padding-bottom: 0; }
+.trace li:last-child::before { display: none; }
+.trace .node {
+  position: absolute; left: -29px; top: 5px; width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid var(--accent); background: var(--bg);
+}
+.trace li:last-child .node { background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.trace .step { color: var(--faint); font-size: 12px; margin-right: 8px; font-weight: 500; }
+.trace .cmd { margin: 10px 0 0; font-size: 14px; padding: 8px 8px 8px 14px; align-items: center; }
+.trace .cmd code { padding: 0; }
+.trace p { margin: 10px 0 0; color: var(--muted); font-size: 15px; }
+
+/* what you get */
+.features { display: grid; gap: 12px; }
+@media (min-width: 680px) { .features { grid-template-columns: 1fr 1fr; } }
+.features article { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 18px 18px 20px; min-width: 0; }
+.features .kicker {
+  margin: 0 0 12px; font: 500 12px/1.4 var(--mono); color: var(--muted);
+  display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere;
+}
+.features .kicker::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.features p:last-child { margin: 8px 0 0; color: var(--muted); font-size: 15px; }
+.features .attn { border-color: color-mix(in srgb, var(--amber) 55%, var(--line)); background: linear-gradient(var(--amber-soft), var(--amber-soft)), var(--surface); }
+.features .attn .kicker { color: var(--amber); }
+.features .attn .kicker::before { background: var(--amber); border-radius: 1px; transform: rotate(45deg); }
+
+/* usage and paths */
+.rows { margin: 0; border-top: 1px solid var(--line); max-width: 880px; }
+.rows > div { display: grid; gap: 4px 24px; padding: 13px 0; border-bottom: 1px solid var(--line); }
+@media (min-width: 720px) { .rows > div { grid-template-columns: 290px 1fr; align-items: baseline; } }
+.rows dt { font: 500 14px/1.5 var(--mono); overflow-wrap: anywhere; }
+.rows dd { margin: 0; color: var(--muted); font-size: 15px; }
+.rows dt .arg { color: var(--muted); font-weight: 400; }
+.read .cmd { max-width: 760px; }
+.read p { color: var(--muted); max-width: 70ch; }
+.read h3 { margin: 34px 0 10px; }
+
+.reqs { margin: 0; padding: 0; list-style: none; display: grid; gap: 12px; max-width: 880px; }
+.reqs li { padding-left: 22px; position: relative; color: var(--muted); }
+.reqs li::before { content: ""; position: absolute; left: 3px; top: .62em; width: 7px; height: 7px; border-radius: 50%; border: 1.5px solid var(--accent); }
+.reqs b { color: var(--text); font-weight: 600; }
+
+footer { margin-top: 80px; border-top: 1px solid var(--line); padding: 24px 0 40px; color: var(--muted); font-size: 14px; }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <div class="wrap">
+    <a class="brand" href="./" aria-label="Agent Chat">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#0b0d12"/><path d="M11 6v20" stroke="#4d7cff" stroke-width="2.5" stroke-linecap="round"/><circle cx="11" cy="10" r="3" fill="#4d7cff"/><circle cx="21" cy="16" r="3" fill="#e6e9ef"/><circle cx="11" cy="23" r="3" fill="#ffb020"/><path d="M14 10h4M14 23h4" stroke="#e6e9ef" stroke-width="1.6" stroke-linecap="round" opacity=".5"/></svg>
+      <span>Agent Chat</span>
+    </a>
+    <nav aria-label="Sections">
+      <a href="#install">Install</a>
+      <a href="#usage">Usage</a>
+      <a href="https://github.com/mandoof1/agent-chat">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero wrap" id="install">
+    <p class="meta mono"><span>runs on your machine</span><span>any OpenAI-compatible server</span><span>Linux + macOS</span><span>MIT</span></p>
+    <h1>Agents on your own model.<span>Watch every step.</span></h1>
+    <p class="lede">Agent Chat is a chat app for agents that run against your own model server, such as llama-server. Each agent has its own job and tools, agents hand work to each other, and every step shows up as a live trace. Open it in the terminal with <code>agent-chat</code>, or in the browser.</p>
+
+    <div class="install">
+      <div class="cmd">
+        <span class="ps" aria-hidden="true">$</span>
+        <code id="cmd-install" data-site>curl -fsSL https://agent-chat-i4sv.onrender.com/install.sh | bash</code>
+        <button class="copy" type="button" data-copy="cmd-install" aria-label="Copy the install command">Copy</button>
+      </div>
+      <p class="note">Installs for your user under <code>~/.local</code>, no sudo. Run it again to update; your chats stay. <a href="#read-first">Read the script before you run it</a>.</p>
+    </div>
+  </section>
+
+  <div class="wrap">
+    <figure class="shot hero-shot">
+      <img src="https://raw.githubusercontent.com/mandoof1/agent-chat/main/docs/img/hero.png" width="2880" height="1800" alt="The Agent Chat web UI: the Orchestrator has handed a task to the Coder, which wrote greet.py and is waiting for approval to run a shell command.">
+      <figcaption>The web UI: the Orchestrator hands a task to the Coder, whose shell command waits for your approval.</figcaption>
+    </figure>
+  </div>
+
+  <section class="block wrap" id="start">
+    <h2>Three steps</h2>
+    <p class="intro">From a fresh machine to a chat with an agent.</p>
+    <ol class="trace">
+      <li>
+        <span class="node" aria-hidden="true"></span>
+        <h3><span class="step mono">1</span>Install</h3>
+        <div class="cmd"><code id="cmd-install-2" data-site>curl -fsSL https://agent-chat-i4sv.onrender.com/install.sh | bash</code><button class="copy" type="button" data-copy="cmd-install-2" aria-label="Copy the install command">Copy</button></div>
+        <p>Downloads the app and the terminal client (checked against the SHA-256 published with the release), installs <a href="https://docs.astral.sh/uv/">uv</a> if it's missing, and sets up the Python environment so the first start is quick.</p>
+      </li>
+      <li>
+        <span class="node" aria-hidden="true"></span>
+        <h3><span class="step mono">2</span>Start your model server</h3>
+        <div class="cmd"><code id="cmd-model">llama-server -m your-model.gguf --jinja</code><button class="copy" type="button" data-copy="cmd-model" aria-label="Copy the llama-server command">Copy</button></div>
+        <p>Agent Chat never starts the model for you. <code>--jinja</code> turns on tool calling. It looks for <code>http://127.0.0.1:8080/v1</code>; for Ollama, LM Studio, vLLM or another port, set the address in Settings.</p>
+      </li>
+      <li>
+        <span class="node" aria-hidden="true"></span>
+        <h3><span class="step mono">3</span>Run it</h3>
+        <div class="cmd"><code id="cmd-run">agent-chat</code><button class="copy" type="button" data-copy="cmd-run" aria-label="Copy agent-chat">Copy</button></div>
+        <p>Starts the app in the background if it isn't running, then opens the terminal client. <code>agent-chat web</code> opens the same app in your browser at <code>http://127.0.0.1:8765</code>.</p>
+      </li>
+    </ol>
+  </section>
+
+  <section class="block wrap" id="features">
+    <h2>What you get</h2>
+    <p class="intro">The same features in the terminal client and the web UI. Chats, agents, memory and settings stay on your machine.</p>
+    <div class="features">
+      <article>
+        <p class="kicker">ask_agent → Coder</p>
+        <h3>Agents with their own tools</h3>
+        <p>Nine to start with: Assistant, Mail, Planner, Orchestrator, Coder, Researcher, Browser, Writer and Reviewer. Each has its own instructions, tools (files, shell, web search, a real browser, email, calendars) and optionally its own model. Any agent can hand a task to another, and that work opens as its own chat.</p>
+      </article>
+      <article>
+        <p class="kicker">thinking · tool call · answer</p>
+        <h3>Live traces</h3>
+        <p>Every reply is a trace: thinking, tool calls, handoffs and the answer, streamed as they happen. Shell output scrolls in while the command runs; a file being written appears line by line.</p>
+      </article>
+      <article class="attn">
+        <p class="kicker">needs approval</p>
+        <h3>Approvals</h3>
+        <p>Shell commands and outgoing email wait for you: Approve, Approve all for this run, or Deny. Letting agents act without asking is a switch you turn on yourself.</p>
+      </article>
+      <article>
+        <p class="kicker">remember · recall_memory</p>
+        <h3>Memory</h3>
+        <p>Agents share a memory of facts about you. It grows as you chat, the most relevant facts come along with each message, and you can read, edit or delete any of them.</p>
+      </article>
+      <article>
+        <p class="kicker">weekdays 07:30 · Mail</p>
+        <h3>Routines</h3>
+        <p>Run an agent on a schedule: a morning email briefing, tomorrow's plan, a news digest. Each routine has its own chat, so you can read every run and reply to it.</p>
+      </article>
+      <article>
+        <p class="kicker">agent-chat · agent-chat web</p>
+        <h3>Terminal client and web UI</h3>
+        <p>A terminal client written in Rust, and a browser UI. Both talk to the same app, so a chat started in one shows up live in the other, approvals included.</p>
+      </article>
+      <article>
+        <p class="kicker">/compact keep the decisions</p>
+        <h3>Slash commands</h3>
+        <p>Type <code>/</code> in the message box: <code>/new</code>, <code>/resume</code>, <code>/compact</code>, <code>/model</code>, <code>/branch</code>, <code>/export</code> and more. Ctrl+K finds any chat by what was said in it.</p>
+      </article>
+      <article>
+        <p class="kicker">ctx 61k / 85k</p>
+        <h3>Long chats keep going</h3>
+        <p>Before a chat runs out of context, older messages are summarized and the agent carries on. The header shows how much of the model's context is in use.</p>
+      </article>
+    </div>
+  </section>
+
+  <section class="block wrap" id="screens">
+    <h2>In the terminal and the browser</h2>
+    <p class="intro">Screenshots from the repository.</p>
+    <div class="shots">
+      <figure class="shot">
+        <img src="https://raw.githubusercontent.com/mandoof1/agent-chat/main/docs/img/tui.png" width="2520" height="1520" loading="lazy" alt="The terminal client showing the same handoff from the Orchestrator to the Coder, with an approval prompt: y approve, a approve all this run, n deny.">
+        <figcaption>The terminal client (<code>agent-chat</code>): the same handoff, approval included.</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="https://raw.githubusercontent.com/mandoof1/agent-chat/main/docs/img/gallery.png" width="2880" height="1800" loading="lazy" alt="The web UI's start page: nine agent cards with their tools, and recent chats.">
+        <figcaption>The start page in the web UI (<code>agent-chat web</code>): pick an agent.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="block wrap" id="usage">
+    <h2>Usage</h2>
+    <p class="intro">One command, like <code>claude</code> or <code>git</code>. The app keeps running in the background after you quit the client, so routines fire on time.</p>
+    <dl class="rows">
+      <div><dt>agent-chat</dt><dd>Open the terminal client, starting the app first if needed. Takes <code>--light</code>, <code>--plain</code>, <code>--chat ID</code>.</dd></div>
+      <div><dt>agent-chat web</dt><dd>Open the web UI in your browser and print its address.</dd></div>
+      <div><dt>agent-chat status</dt><dd>Whether the app is up, whether it can reach your model server, and where your data lives.</dd></div>
+      <div><dt>agent-chat stop <span class="arg">| start | restart</span></dt><dd>Control the background app. <code>stop</code> only stops one that <code>agent-chat</code> started.</dd></div>
+      <div><dt>agent-chat logs <span class="arg">[-f]</span></dt><dd>The app's log, or follow it.</dd></div>
+      <div><dt>agent-chat update</dt><dd>Install the latest release in place. Chats, agents, memory, settings and the workspace stay.</dd></div>
+      <div><dt>agent-chat uninstall <span class="arg">[--purge]</span></dt><dd>Remove the app and keep your data, or delete the data too with <code>--purge</code>. Asks first; <code>-y</code> skips that.</dd></div>
+    </dl>
+  </section>
+
+  <section class="block wrap read" id="read-first">
+    <h2>Read the script first</h2>
+    <p class="intro">It's a plain bash script. Download it and read it:</p>
+    <div class="cmd"><code id="cmd-read" data-site>curl -fsSL https://agent-chat-i4sv.onrender.com/install.sh -o install.sh
+less install.sh</code><button class="copy" type="button" data-copy="cmd-read" aria-label="Copy the download and read commands">Copy</button></div>
+    <p>Then, if you're happy with it, run it:</p>
+    <div class="cmd"><code id="cmd-run-script">bash install.sh</code><button class="copy" type="button" data-copy="cmd-run-script" aria-label="Copy bash install.sh">Copy</button></div>
+    <p>Environment variables change what it does: <code>AGENT_CHAT_VERSION=0.3.0</code> installs that release, <code>AGENT_CHAT_NO_TUI=1</code> skips the terminal client, <code>AGENT_CHAT_HOME</code> (a folder for Agent Chat alone) and <code>AGENT_CHAT_BIN</code> move the install. Run it as yourself, not with sudo. With <code>| bash</code>, put them after the pipe: <code>… | AGENT_CHAT_NO_TUI=1 bash</code>.</p>
+
+    <h3>Where things go</h3>
+    <dl class="rows">
+      <div><dt>~/.local/share/agent-chat/app</dt><dd>The app. Replaced as a whole on every update.</dd></div>
+      <div><dt>~/.local/share/agent-chat/data</dt><dd>Your chats, agents, memory and settings. Updates never touch it.</dd></div>
+      <div><dt>~/.local/share/agent-chat/workspace</dt><dd>The folder the agents' file and shell tools work in.</dd></div>
+      <div><dt>~/.local/bin/agent-chat</dt><dd>The launcher, next to <code>agent-chat-tui</code>, the terminal client.</dd></div>
+      <div><dt>~/.local/state/agent-chat</dt><dd>The background app's log and pid file.</dd></div>
+    </dl>
+  </section>
+
+  <section class="block wrap" id="requirements">
+    <h2>Requirements</h2>
+    <ul class="reqs">
+      <li><b>Linux or macOS.</b> On Linux x86_64 the terminal client is a prebuilt static binary. Elsewhere the installer builds it with cargo if Rust is installed; without Rust you get the web UI. On Windows, use WSL.</li>
+      <li><b>A model server</b> with an OpenAI-compatible API: llama-server started with <code>--jinja</code> (tool calling needs it), or Ollama, LM Studio, vLLM. Pick a model that handles tool calls.</li>
+      <li><b>uv</b> runs the Python side. The installer installs it if it's missing, and uv fetches a suitable Python if yours is older than 3.11.</li>
+      <li><b>curl and tar</b>, and about 400 MB of disk for the app, its Python packages and uv's download cache.</li>
+    </ul>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <a href="https://github.com/mandoof1/agent-chat">github.com/mandoof1/agent-chat</a>
+    <span>MIT license</span>
+    <span>No trackers or cookies here; the only script is for the copy buttons.</span>
+  </div>
+</footer>
+
+<script>
+(() => {
+  // The commands name the site they're served from, so they stay right on any host name.
+  const PLACEHOLDER = "https://agent-chat-i4sv.onrender.com";
+  if (/^https?:$/.test(location.protocol) && location.origin !== PLACEHOLDER) {
+    for (const el of document.querySelectorAll("[data-site]")) {
+      el.textContent = el.textContent.split(PLACEHOLDER).join(location.origin);
+    }
+  }
+  for (const btn of document.querySelectorAll("[data-copy]")) {
+    btn.addEventListener("click", async () => {
+      const src = document.getElementById(btn.dataset.copy);
+      let ok = false;
+      try { await navigator.clipboard.writeText(src.textContent); ok = true; } catch (e) {}
+      if (!ok) {  // no clipboard API (plain http): select the text so Ctrl+C works
+        const range = document.createRange();
+        range.selectNodeContents(src);
+        const sel = getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        try { ok = document.execCommand("copy"); } catch (e) {}
+      }
+      btn.textContent = ok ? "Copied" : "Ctrl+C";
+      btn.classList.toggle("done", ok);
+      clearTimeout(btn.timer);
+      btn.timer = setTimeout(() => { btn.textContent = "Copy"; btn.classList.remove("done"); }, 1600);
+    });
+  }
+})();
+</script>
+</body>
+</html>

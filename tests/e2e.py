@@ -4,6 +4,7 @@ from collections import Counter
 import httpx
 
 B = os.environ.get("AC_URL", "http://127.0.0.1:8765")
+MOCK = os.environ.get("MOCK_URL", "http://127.0.0.1:8766/v1")
 
 
 async def scenario(agent, content, approve=None, stop_after=None, peek=False, run_body=None, chat_id=None):
@@ -78,7 +79,7 @@ async def main():
         await c.put(f"{B}/api/settings", json={"base_url": "http://127.0.0.1:8799/v1"})
     show("server down", await scenario("assistant", "hi"))
     async with httpx.AsyncClient(headers={"X-Agent-Chat": "1"}) as c:
-        await c.put(f"{B}/api/settings", json={"base_url": "http://127.0.0.1:8766/v1"})
+        await c.put(f"{B}/api/settings", json={"base_url": MOCK})
         r = await c.post(f"{B}/api/chats/{cid}/run", json={})
         print("\nrun with nothing to answer ->", r.status_code, r.text)
 

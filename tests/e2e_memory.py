@@ -3,6 +3,7 @@ import asyncio, json, os
 import httpx
 
 B = os.environ.get("AC_URL", "http://127.0.0.1:8767")
+MOCK = os.environ.get("MOCK_URL", "http://127.0.0.1:8766/v1")
 
 
 async def turn(c, chat_id, content):
@@ -21,7 +22,7 @@ async def turn(c, chat_id, content):
 
 async def main():
     async with httpx.AsyncClient(timeout=None, headers={"X-Agent-Chat": "1"}) as c:
-        await c.put(f"{B}/api/settings", json={"base_url": "http://127.0.0.1:8766/v1", "auto_memory": True})
+        await c.put(f"{B}/api/settings", json={"base_url": MOCK, "auto_memory": True})
         chat = (await c.post(f"{B}/api/chats", json={"agent_id": "assistant"})).json()["id"]
 
         print("== automatic extraction after a reply")

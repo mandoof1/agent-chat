@@ -10,6 +10,8 @@ import os
 import httpx
 
 B = os.environ.get("AC_URL", "http://127.0.0.1:8767")
+MOCK = os.environ.get("MOCK_URL", "http://127.0.0.1:8766/v1")
+MOCK_NCTX = os.environ.get("MOCK_NCTX_URL", "http://127.0.0.1:8768/v1")
 NOTICE = "filled the context window"
 
 
@@ -47,7 +49,7 @@ async def get_chat(c, chat_id):
 
 async def test_continues(c):
     print("\n== cut-off reply continues (Coder, cut off twice)")
-    await settings(c, base_url="http://127.0.0.1:8766/v1", auto_compact=True, bypass_approvals=False)
+    await settings(c, base_url=MOCK, auto_compact=True, bypass_approvals=False)
     chat = await new_chat(c, "coder")
     evs = await run_turn(c, chat, "cutoff 2")
     notices = [e["text"] for e in evs if e["type"] == "notice"]
@@ -79,7 +81,7 @@ async def test_delegated(c):
 
 async def test_crowded(c):
     print("\n== cut off while the prompt fills most of the window: compact, then continue")
-    await settings(c, base_url="http://127.0.0.1:8768/v1", auto_compact=False)
+    await settings(c, base_url=MOCK_NCTX, auto_compact=False)
     chat = await new_chat(c, "coder")
     for i in (1, 2):
         await run_turn(c, chat, f"big {i}")
@@ -94,7 +96,7 @@ async def test_crowded(c):
 
 async def test_full(c):
     print("\n== cut off with a prompt that fills the window and can't be compacted: clear error")
-    await settings(c, base_url="http://127.0.0.1:8766/v1")
+    await settings(c, base_url=MOCK)
     chat = await new_chat(c, "coder")
     evs = await run_turn(c, chat, "cutoff 1 full")
     errors = [e["message"] for e in evs if e["type"] == "error"]
@@ -110,7 +112,7 @@ async def main():
             await test_crowded(c)
             await test_full(c)
         finally:
-            await settings(c, base_url="http://127.0.0.1:8766/v1", auto_compact=True)
+            await settings(c, base_url=MOCK, auto_compact=True)
     print("\nall cut-off tests passed")
 
 asyncio.run(asyncio.wait_for(main(), 120))

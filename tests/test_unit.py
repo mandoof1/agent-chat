@@ -1,10 +1,13 @@
 """Unit tests that need no server: run with `uv run python tests/test_unit.py` (or pytest)."""
+import asyncio
 import os
+import re
 import sys
 import tempfile
 from datetime import datetime
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 os.environ.setdefault("AGENT_CHAT_DATA", tempfile.mkdtemp(prefix="ac-unit-"))
 
 from app import history, memory, routines, store, tools  # noqa: E402
@@ -138,6 +141,87 @@ def test_agent_order():
     assert [a["id"] for a in store.list_agents()][:2] == ["writer", "coder"]
     store.reorder_agents(ids)
     assert [a["id"] for a in store.list_agents()] == ids
+
+
+def test_chat_age_in_markdown_export():  # the web footer's two facts: e2e_ui checks the same spans in the browser
+    from app import main
+    for secs, want in ((-5, "0s"), (0, "0s"), (45, "45s"), (59.9, "59s"), (60, "1m"), (719, "11m"), (3599, "59m"),
+                       (3600, "1h 0m"), (11520, "3h 12m"), (86399, "23h 59m"), (86400, "1d 0h"), (187200, "2d 4h")):
+        assert main._span(secs) == want, (secs, main._span(secs))
+    t0 = datetime(2026, 10, 10, 9, 14).timestamp()
+    assert main._chat_age({"created": t0, "compactions": [{}, {}]}, t0 + 11520) == "compacted 2× · started 2026-10-10 09:14 (going for 3h 12m)"
+    assert main._chat_age({"created": t0, "compactions": []}, t0 + 240) == "not compacted yet · started 2026-10-10 09:14 (going for 4m)"
+    store.seed_defaults()
+    chat = store.create_chat("assistant")
+    chat.update(messages=[{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}, {"role": "user", "content": "c"}],
+                compactions=[{"upto": 2, "summary": "s"}])
+    store.save_chat(chat)
+    md = asyncio.run(main.export_chat(chat["id"])).body.decode()
+    assert re.match(r"# New chat\n\nAgent: Assistant · compacted 1× · started \d{4}-\d\d-\d\d \d\d:\d\d \(going for \d+s\)\n\n## You", md), md[:160]
+    store.delete_chat(chat["id"])
+
+
+def test_downloads_named_in_any_script_and_text_in_any_shape():
+    from urllib.parse import unquote
+
+    from app import main
+    for name in ("محادثة-日本語-Ελληνικά.md", 'a "quoted" \\ name.json', "plain.md"):
+        cd = main._attachment(name)
+        cd.encode("latin-1")  # a header value must be Latin-1, or the response dies (/export of a chat titled 日本語 was a 500)
+        plain = cd.split('filename="')[1].split('"; ')[0]
+        assert plain.isascii() and '"' not in plain and "\\" not in plain and len(plain) == len(name), cd
+        assert unquote(cd.split("filename*=UTF-8''")[1]) == name, cd
+    store.seed_defaults()
+    chat = store.create_chat("assistant")
+    chat["title"] = "Exp 日本語"
+    store.save_chat(chat)
+    md = asyncio.run(main.export_chat(chat["id"]))
+    assert md.headers["content-disposition"].endswith("filename*=UTF-8''Exp-%E6%97%A5%E6%9C%AC%E8%AA%9E.md"), md.headers
+    assert md.body.decode().startswith("# Exp 日本語")
+    store.delete_chat(chat["id"])
+    # a file name that isn't UTF-8 (Python keeps the bytes as surrogate escapes) is listed, not a 500
+    assert main._shown(os.fsdecode(b"bad\xff\xfe name.txt")) == "bad\ufffd\ufffd name.txt"
+    # lone UTF-16 surrogates ("\\ud800" alone is valid JSON) become U+FFFD in every request body, nested too
+    assert main.RunIn.model_validate({"content": "a \ud800 b \udfff 😀"}).content == "a \ufffd b \ufffd 😀"
+    agent = main.AgentIn.model_validate({"name": "x\udc00", "tools": ["t\ud800"]})
+    assert (agent.name, agent.tools) == ("x\ufffd", ["t\ufffd"])
+    assert main.RoutineIn.model_validate({"schedule": {"k\ud800": "v\udbff"}}).schedule == {"k\ufffd": "v\ufffd"}
+
+
+def _registry(path, start):
+    """A client's slash-command registry as data: the lines between `start` and the closing `];`, one entry each."""
+    block = open(os.path.join(ROOT, path), encoding="utf-8").read().split(start, 1)[1].split("\n];", 1)[0]
+    out = []
+    for line in block.splitlines():
+        line = line.strip()
+        if not line or line.startswith("//"):
+            continue
+        assert re.match(r"(Cmd )?\{ name: \"\w+\", .*\},$", line) and line.count('{ name: "') == 1, f"{path}: not one entry per line: {line}"
+        head = line.split(", desc: ", 1)[0]  # the description and run function differ between the clients
+        flag = lambda k: (re.search(rf"\b{k}: (true|false)\b", head) or [None, "false"])[1] == "true"
+        aliases = re.search(r"\baliases: &?\[([^\]]*)\]", head)
+        args = re.search(r'\bargs: "([^"]*)"', head)
+        out.append({"name": re.search(r'\bname: "(\w+)"', head)[1], "aliases": re.findall(r'"(\w+)"', aliases[1]) if aliases else [],
+                    "args": args[1] if args else "", "chat": flag("chat"), "idle": flag("idle")})
+    return out
+
+
+def test_slash_registries_match():  # static/js/commands.js and tui/src/commands.rs list the same commands
+    web = _registry("static/js/commands.js", "export const COMMANDS = [")
+    tui = _registry("tui/src/commands.rs", "pub const COMMANDS: &[Cmd] = &[")
+    assert [c for c in tui if c["name"] == "quit"] == [{"name": "quit", "aliases": ["exit"], "args": "", "chat": False, "idle": False}]
+    tui = [c for c in tui if c["name"] != "quit"]  # only a terminal has something to quit
+    for c in web + tui:
+        names = [c["name"], *c["aliases"]]
+        assert "quit" not in names and "exit" not in names, c
+        if c["name"] == "theme":  # each client lists its own themes (web auto/light/dark, TUI dark/light/plain)
+            assert re.fullmatch(r"\[\w+(\|\w+)+\]", c["args"]), c
+            c["args"] = "[themes]"
+    assert [c["name"] for c in web] == [c["name"] for c in tui], ([c["name"] for c in web], [c["name"] for c in tui])
+    diffs = [f"/{w['name']} {k}: web {w[k]!r}, tui {t[k]!r}" for w, t in zip(web, tui) for k in w if w[k] != t[k]]
+    assert not diffs, "; ".join(diffs)
+    every = [n for c in web for n in (c["name"], *c["aliases"])]
+    assert len(every) == len(set(every)) and len(web) == 26, every
 
 
 if __name__ == "__main__":

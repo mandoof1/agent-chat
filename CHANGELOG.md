@@ -1,5 +1,66 @@
 # Changelog
 
+## 0.3.0 — 2026-10-10
+
+Install it with one command, run it like Claude Code, and a terminal client that survives
+whatever you paste into it.
+
+### Install and launch
+- `curl -fsSL https://agent-chat-i4sv.onrender.com/install.sh | bash` installs for your user
+  (no sudo): the app, a prebuilt static terminal client on Linux x86_64 (SHA-256 checked),
+  uv if missing, and the `agent-chat` command. Data lives outside the code folder, so updates
+  and uninstalls keep it. The landing page and the script are served from `site/` on Render.
+- `agent-chat` starts the app in the background when nothing answers on the port and opens the
+  terminal client; `web`, `status`, `stop`, `restart`, `logs`, `update [VER]`, `uninstall
+  [--purge]`. Updates swap the code atomically and roll back if anything fails.
+- `scripts/build-release.sh` builds the static (musl) client and its checksum for a release.
+
+### Slash commands
+- `/` at the start of the message box, in the web UI and the terminal client, opens a menu of
+  27 commands: `/help`, `/new`, `/resume`, `/rename`, `/pin`, `/branch`, `/retry`, `/edit`,
+  `/stop`, `/compact [instructions]`, `/export`, `/copy`, `/delete`, `/agents`, `/model`,
+  `/memory`, `/remember`, `/permissions`, `/settings`, `/routines`, `/files`, `/verbose`,
+  `/theme`, `/context`, `/usage`, `/status`, and `/quit` in the terminal. Aliases (`/clear`,
+  `/fork`, `/config`, `/cost`, …) match too. Commands never reach the agent and run while it
+  works; ones that would change its work wait and keep your text. `//` sends a literal `/`.
+- `POST /api/chats/{id}/compact` takes optional `instructions` for what the summary must keep.
+- A test keeps the two clients' command lists identical.
+
+### Chat footer
+- The end of every chat shows how many times it was compacted and how long it has been going
+  (`compacted 2× · going for 3h 12m`), live, in both clients; `/usage` and `/context` too.
+
+### Terminal client: pastes and rendering
+- **Large pastes no longer break the screen.** Pasted `\r` / `\r\n` became raw carriage returns
+  that sent the cursor to column 0, and tabs in a sent message moved the real cursor, leaving
+  stale text down the right side. Pastes are now normalized (line endings, escape codes and
+  control characters), every string drawn goes through one sanitizer, and a final pass over
+  each frame blanks any control character left.
+- Pastes over 10 lines or 1,000 characters go in as a `[Pasted text #N +L lines]` token and
+  are sent in full. Terminals without bracketed paste are detected by timing, so a pasted
+  newline is a line break, not Enter, and keys inside a paste never run shortcuts.
+- Emoji whose width terminals disagree on (VS16, ZWJ sequences, skin tones, flags, keycaps)
+  are drawn in a form that keeps rows aligned; text wraps by display width (CJK, emoji).
+- No panics at any size (1×1 up), dialogs that scroll, a restored terminal after a panic,
+  toasts capped at three with repeats counted, one redraw per batch of input.
+
+### Terminal client: fixes
+- Approvals: `y`/`a`/`n` only when the trace has the focus; Alt+Y/Alt+A/Alt+N from anywhere.
+  Before, the first letter typed into an empty box or the sidebar filter could answer one.
+- One event stream per chat visit (switching A→B→A applied every event twice); UTF-8 split
+  across network reads; a deleted or missing chat closes once instead of retrying forever.
+- Ctrl+C closes a dialog, clears the filter or the box, and only then quits.
+- Mouse clicks and focus follow what is on screen at narrow widths; welcome-page numbers
+  start chats; the Calendars form adds on Enter; memory delete asks first; prompts move their
+  cursor; the files drawer refreshes; the palette keeps its selection in view; edits that
+  fail keep your text; and about sixty more found by a feature-by-feature audit.
+
+### Tests
+- New suites: `tests/e2e_tui_keys.py`, `tests/e2e_tui_render.py`, `tests/e2e_tui_slash.py`,
+  `tests/e2e_ui_more.py`; the Rust unit tests grew from 4 to over 200. Screen corruption is
+  checked by comparing the screen with a forced full repaint.
+- `TEST_PORT_BASE` moves every port in `tests/run_all.sh`; `SKIP_TUI=1` skips the terminal.
+
 ## 0.2.0 — 2026-10-09
 
 A product release: a new UI, and the backend pieces a daily driver needs.
