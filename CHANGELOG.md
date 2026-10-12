@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.1 — 2026-10-12
 
 ### Fixed: compaction that repeated itself
 - **A chat no longer compacts over and over.** Compaction never checked that it freed anything.
