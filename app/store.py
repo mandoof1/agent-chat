@@ -39,6 +39,7 @@ DEFAULT_SETTINGS = {
     "search_url": "",      # SearXNG base URL for web_search (JSON API); empty = scrape DuckDuckGo
     "browser_headless": True,              # Browser agent: run Brave headless (True) or visible (False)
     "browser_executable": "/usr/bin/brave",  # path to the Brave (or other Chromium) binary to drive
+    "mcp_servers": {},     # MCP servers agents can use as tools: {"name": {"command", "args", "env", ...}} (app/mcp.py)
 }
 
 AGENT_FIELDS = {

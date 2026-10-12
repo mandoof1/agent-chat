@@ -7,6 +7,8 @@ Behaviour is keyed off the last user message:
   "shell: <cmd>"   -> calls run_shell
   "shell twice: <cmd>" -> calls run_shell, then again with "<cmd> again" (two approvals in one run)
   "write: <text>"  -> calls write_file notes.txt
+  "mcp: <tool> <json>" -> calls <tool> (find_tools, call_tool, <server>__<tool>) with those arguments
+  "which tools"    -> answers with the names of the tools the request offered
   "readloop N"     -> reads notes.txt N times in a row, then answers (tool outputs that pile up)
   "delegate"       -> calls ask_agent(Coder, "shell: echo hello from coder")
   "qa"             -> Orchestrator asks Coder to build something; Coder answers with a
@@ -222,6 +224,8 @@ async def completions(request: Request):
                 tool = ("run_shell", {"command": "for i in 1 2 3 4; do echo tick$i; sleep 0.4; done"})
             elif user.startswith("shell twice:") and "run_shell" in tools:
                 tool = ("run_shell", {"command": user[len("shell twice:"):].strip()})
+            elif user.startswith("mcp: ") and (m := re.match(r"(\S+)\s*(.*)", user[5:].strip(), re.S)) and m[1] in tools:
+                tool = (m[1], json.loads(m[2] or "{}"))
             elif user.startswith("shell:") and "run_shell" in tools:
                 tool = ("run_shell", {"command": user[6:].strip()})
             elif user.startswith("write:") and "write_file" in tools:
@@ -267,6 +271,8 @@ async def completions(request: Request):
                 delay = 0.02
             elif "delegate" in user and "ask_agent" in tools:
                 tool = ("ask_agent", {"agent": "Coder", "message": "shell: echo hello from coder"})
+            elif user == "which tools":
+                text = "Tools: " + ", ".join(sorted(tools))
             elif user.startswith("think long"):
                 reasoning = "\n".join(f"Step {i}: considering option {i} carefully before answering." for i in range(120))
                 text = "Thought it through. Final answer: 42."

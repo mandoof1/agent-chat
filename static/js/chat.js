@@ -337,6 +337,8 @@ function argSummary(name, a) {
     case "calendar_events": return [a.query && `“${a.query}”`, a.start || "today", a.days && `${a.days} days`].filter(Boolean).join(" · ");
     case "email_send": case "email_draft": return `${a.to} · ${a.subject || ""}`;
     case "read_file": return a.start_line ? `${a.path}:${a.start_line}-${a.end_line ?? ""}` : a.path;
+    case "find_tools": return a.query ? `“${a.query}”` : "all tools";
+    case "call_tool": return `${a.tool} ${oneLine(JSON.stringify(a.arguments ?? {}), 80)}`;
     default: return a.path ?? oneLine(JSON.stringify(a));
   }
 }

@@ -283,6 +283,7 @@
       <button type="button" class="tab" data-tab="tools" role="tab">Web &amp; browser</button>
       <button type="button" class="tab" data-tab="email" role="tab">Email <span class="hint" id="email-state"></span></button>
       <button type="button" class="tab" data-tab="calendars" role="tab">Calendars <span class="hint" id="calendar-state"></span></button>
+      <button type="button" class="tab" data-tab="mcp" role="tab">MCP <span class="hint" id="mcp-state"></span></button>
     </div>
 
     <section class="tab-pane active" data-pane="model">
@@ -383,6 +384,17 @@
         <button type="button" id="calendar-test-btn" class="btn ghost">Test calendars</button>
         <span id="calendar-test" class="hint grow" style="white-space:pre-line"></span>
       </div>
+    </section>
+
+    <section class="tab-pane" data-pane="mcp">
+      <p class="hint">MCP servers are programs that give agents more tools. Paste a server's config in the <code>mcpServers</code> shape its README gives (for Claude Desktop), save, then tick the server under Tools in an agent's settings. Only servers that run as a local command (stdio) work. Optional per server:
+        <code>"confirm"</code> (<code>"destructive"</code>, the default, asks you before a tool that may change things; <code>"always"</code>; <code>"never"</code>),
+        <code>"timeout"</code> (seconds per call, default 600, 0 = no limit), <code>"disabled": true</code>.
+        A server with many tools isn't put in the agent's tool list; the agent searches it with find_tools instead.</p>
+      <label><span>Servers <span class="hint">JSON</span></span>
+        <textarea name="mcp_servers" rows="9" spellcheck="false" class="code-input" placeholder='{"mcpServers": {"name": {"command": "npx", "args": ["-y", "some-mcp-server"]}}}'></textarea>
+      </label>
+      <div id="mcp-list"></div>
     </section>
 
     <div class="dialog-actions">

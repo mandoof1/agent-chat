@@ -259,6 +259,7 @@ Personal Assistant, Tutor, Translator, Brainstormer and Data Analyst.
 | `email_draft` | Saves a draft in your mailbox without sending. |
 | `email_send` | Sends an email. Shows you the exact email to Approve or Deny first, unless you turned on bypass permissions. |
 | `calendar_events` | Lists events from your connected calendars in local time (default: the next 7 days; a search looks a year ahead). Read-only. |
+| MCP servers | Tools from other programs over the [Model Context Protocol](https://modelcontextprotocol.io/). A small server's tools are offered by name (`<server>__<tool>`); a big one is searched with `find_tools` and run with `call_tool`. See [MCP servers](#mcp-servers). |
 
 ## How agents talk to each other
 
@@ -398,6 +399,44 @@ bundled-browser download is needed.
 - **Install:** `uv sync` pulls in Playwright. You don't need `playwright install`, because the
   agent drives your installed Brave rather than a downloaded Chromium.
 
+## MCP servers
+
+Agents can use tools from [MCP](https://modelcontextprotocol.io/) servers, the plug-ins many
+agent apps share (reverse engineering, databases, GitHub, ...). Only local servers that run as a
+command (the stdio transport) are supported.
+
+1. **Settings → MCP:** paste the server's config in the `mcpServers` shape its README gives for
+   Claude Desktop, and save. For example [REA](https://github.com/morluto/rea), for reverse
+   engineering:
+   ```json
+   {"mcpServers": {"rea": {"command": "npx", "args": ["-y", "rea-agents@6.4.0", "mcp"],
+                           "env": {"REA_MCP_INPUT_SCHEMA_PROFILE": "compact"}}}}
+   ```
+2. **Test** starts the server and shows how many tools it has and what they cost in context.
+3. **Edit an agent → Tools → MCP servers:** tick the server.
+
+The server starts when an agent that has it begins a turn (the chat shows "Starting MCP
+server …"), and keeps running, one process for every agent, until you change its settings or
+stop the app. If it crashes, the call says why (the end of its stderr) and the next call starts
+it again. Stop cancels a running call on the server too.
+
+**Big servers are searched, not listed.** Every tool definition goes into every request, and a
+local model's context is small: REA's 170 tools would take about 67K tokens. A server whose
+definitions are over ~4K tokens isn't put in the agent's tool list. The agent gets two tools
+instead: `find_tools` searches the server's catalog by keywords and returns the best matches with
+their argument schemas (an empty query lists every name), and `call_tool` runs one. The system
+prompt names the server, its tool count and the instructions it gives clients.
+
+**Approvals.** By default a call asks you first unless the tool declares itself read-only or
+non-destructive (MCP's `readOnlyHint`/`destructiveHint`). Per server, `"confirm": "always"` asks
+for every call and `"never"` for none; bypass permissions skips the question as usual.
+
+Other keys per server: `"env"` (added to the app's environment), `"timeout"` (seconds per call,
+default 600, 0 = no limit) and `"disabled": true`. The server runs in the default workspace
+folder; tools get absolute paths. Text results go to the model as they are (cut to fit the
+context like other tool outputs), images and files a tool returns are saved under `mcp/` in the
+agent's workspace, and a result with only structured content is shown as JSON.
+
 ## Long chats: auto-compaction
 
 Before every model call the app estimates the prompt size. It calibrates itself against the
@@ -457,6 +496,7 @@ app/routines.py   scheduled agent runs
 app/llm.py        streaming OpenAI-compatible client
 app/tools.py      file, shell (with live output) and web tools
 app/browser.py    Playwright + Brave browser tools
+app/mcp.py        MCP servers (stdio): processes, tool lists, find_tools/call_tool
 app/store.py      JSON storage: agents, chats (pin, fork), settings
 app/defaults.py   starter agents
 static/           the web UI: index.html, style.css, js/ (ES modules, no build step)
@@ -484,6 +524,7 @@ POST /api/chats/{id}/compact {instructions?}   summarize older messages now
 GET  /api/workspace?agent_id&path        folder listing;  GET /api/workspace/file?agent_id&path[&download]
 GET  /api/agents/{id}/prompt             the composed system prompt;  PUT /api/agents/order {ids}
 GET  /api/search?q=                      chats whose messages contain q
+GET  /api/mcp                            MCP servers: running, tools, last error;  POST /api/mcp/{name}/test
 ```
 
 ## Tests (no GPU needed)
@@ -498,7 +539,8 @@ That runs, in order: `tests/test_unit.py` (history, compaction, routines, memory
 (sub-chats, statuses, compaction), `tests/e2e_cutoff.py`, `tests/e2e_ctx.py`,
 `tests/e2e_queue.py`, `tests/e2e_memory.py`, `tests/e2e_routines.py`, `tests/e2e_v2.py`
 (pinning, branching, exports, approve-all, titles, workspace, images, live shell output,
-agent order), `tests/e2e_calendar.py`, `tests/e2e_browser.py` (real headless Brave over a
+agent order), `tests/e2e_calendar.py`, `tests/e2e_mcp.py` (MCP servers, against the fake
+server in `tests/fake_mcp.py`), `tests/e2e_browser.py` (real headless Brave over a
 local page), `tests/e2e_ui.py` (the web UI itself in headless Brave: streaming,
 approvals, files, palette, branching, images, unread, errors, keyboard, mobile) and, when
 `cargo` is installed, the Rust unit tests (`cargo test` in `tui/`) and the terminal client in a

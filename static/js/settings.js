@@ -1,4 +1,4 @@
-// Settings: model server, agent behaviour, web and browser, email, calendars.
+// Settings: model server, agent behaviour, web and browser, email, calendars, MCP servers.
 
 import { S } from "./state.js";
 import { $, $$, el, svgIcon, api } from "./util.js";
@@ -33,6 +33,7 @@ export function openSettings(tab = "model") {
   f("search_url").value = S.settings.search_url ?? "";
   f("browser_executable").value = S.settings.browser_executable ?? "/usr/bin/brave";
   f("browser_headless").checked = S.settings.browser_headless !== false;
+  f("mcp_servers").value = mcpText(S.settings.mcp_servers);
   fillModelSelect(f("model"), S.settings.model, "Server default / first model");
   $("#settings-test").textContent = S.server.ok ? `Connected · ${S.server.models.length} model${S.server.models.length === 1 ? "" : "s"}${S.server.n_ctx ? ` · context ${S.server.n_ctx.toLocaleString()}` : ""}` : S.server.ok === false ? `Not reachable: ${S.server.error || ""}` : "";
   $("#email-test").textContent = "";
@@ -40,6 +41,7 @@ export function openSettings(tab = "model") {
   $("#settings-version").textContent = S.version ? `Agent Chat ${S.version}` : "";
   loadEmailSettings();
   loadCalendars();
+  loadMcp();
   showTab(tab);
   $("#settings-dialog").showModal();
 }
@@ -128,6 +130,45 @@ $("#calendar-test-btn").onclick = async () => {
   catch (e) { $("#calendar-test").textContent = "Failed: " + e.message; }
 };
 
+const mcpText = (servers) => (servers && Object.keys(servers).length ? JSON.stringify({ mcpServers: servers }, null, 2) : "");
+
+function mcpLine(s) {
+  if (s.disabled) return "turned off";
+  if (s.error) return `failed: ${s.error}`;
+  if (!s.running) return s.listed ? `stopped · ${s.tools} tools · starts again when an agent uses it` : "not started · starts when an agent that has it begins a turn";
+  const how = s.mode === "direct" ? "all in the agent's tool list" : "searched with find_tools";
+  return `running${s.server?.name ? ` · ${s.server.name} ${s.server.version || ""}`.trimEnd() : ""} · ${s.tools} tools, ${how} (~${s.tokens.toLocaleString()} tokens)`;
+}
+
+function renderMcp(list) {
+  $("#mcp-state").textContent = list.length ? `${list.length}` : "";
+  const box = $("#mcp-list");
+  box.innerHTML = "";
+  for (const s of list) {
+    const line = el("span", { class: "muted small grow" }, mcpLine(s));
+    const test = el("button", { type: "button", class: "btn sm ghost", onclick: async () => {
+      if (f("mcp_servers").value.trim() !== mcpText(S.settings.mcp_servers)) return toast("Save your changes first, then test.", "info");
+      line.textContent = "Starting… (the first start may download the server)";
+      test.disabled = true;
+      try { const r = await api("POST", `/api/mcp/${encodeURIComponent(s.name)}/test`); line.textContent = mcpLine(r); }
+      catch (e) { line.textContent = `failed: ${e.message}`; }
+      test.disabled = false;
+    } }, s.running ? "Restart" : "Test");
+    box.append(el("div", { class: "mcp-item" }, el("b", {}, s.name), line, test));
+  }
+}
+
+async function loadMcp() {
+  try { renderMcp(await api("GET", "/api/mcp")); } catch {}
+}
+
+function readMcp() {
+  const text = f("mcp_servers").value.trim();
+  if (!text) return {};
+  try { return JSON.parse(text); }
+  catch (e) { showTab("mcp"); throw new Error(`MCP servers: not valid JSON (${e.message})`); }
+}
+
 f("bypass_approvals").addEventListener("change", async (e) => {
   if (e.target.checked && !(await confirm({ title: "Bypass permissions?", text: BYPASS_WARNING, ok: "Bypass", danger: true }))) e.target.checked = false;
 });
@@ -155,6 +196,7 @@ form.addEventListener("submit", async (e) => {
   if (e.submitter?.value !== "save") return;
   e.preventDefault();
   try {
+    const mcp_servers = readMcp();
     if (f("email_username").value.trim() || f("email_password").value) await saveEmailSettings();
     S.settings = await api("PUT", "/api/settings", {
       base_url: f("base_url").value.trim(),
@@ -171,6 +213,7 @@ form.addEventListener("submit", async (e) => {
       search_url: f("search_url").value.trim(),
       browser_executable: f("browser_executable").value.trim() || "/usr/bin/brave",
       browser_headless: f("browser_headless").checked,
+      mcp_servers,
     });
     $("#settings-dialog").close();
     renderMode();
