@@ -5,6 +5,7 @@ import itertools
 import os
 import re
 import signal
+import sys
 import time
 from html.parser import HTMLParser
 from pathlib import Path
@@ -38,7 +39,8 @@ def _fn(name: str, description: str, properties: dict, required: list[str]) -> d
 SCHEMAS = {
     "list_dir": _fn("list_dir", "List files and folders in a workspace directory.",
                     {"path": {"type": "string", "description": "Directory relative to the workspace. Default '.'"}}, []),
-    "read_file": _fn("read_file", "Read a text file from the workspace. Lines are numbered.",
+    "read_file": _fn("read_file", "Read a text file from the workspace. Each line starts with its number and a "
+                     "tab, which are not part of the file.",
                      {"path": {"type": "string", "description": "File path relative to the workspace"},
                       "start_line": {"type": "integer", "description": "First line to read (1-based, optional)"},
                       "end_line": {"type": "integer", "description": "Last line to read (inclusive, optional)"}},
@@ -193,10 +195,12 @@ def read_file(ws: Path, path: str, start_line: int | None = None, end_line: int 
         raise ToolError(f"'{path}' does not exist or is not a file")
     lines = target.read_text(errors="replace").splitlines()
     start = max(1, start_line or 1)
+    if lines and start > len(lines):  # not "(empty file)": a small model believes that and starts over
+        return f"(nothing from line {start} on: {path} has {len(lines)} lines)"
     end = min(len(lines), end_line or len(lines))
     out, size = [], 0
     for n in range(start, end + 1):
-        row = f"{n:>5}  {lines[n - 1]}"
+        row = f"{n:>6}\t{lines[n - 1]}"  # as cat -n: a tab, so the number isn't copied as indentation
         size += len(row) + 1
         if size > MAX_READ:
             out.append(f"... [stopped at line {n - 1} of {len(lines)}; use start_line to read more]")
@@ -212,17 +216,53 @@ def write_file(ws: Path, path: str, content: str) -> str:
     return f"Wrote {len(content.encode())} bytes to {target.relative_to(ws)}"
 
 
+LINE_NUMBER = re.compile(r"^ *\d+(\t|  )")  # how read_file numbers lines (now, and before 0.3.3)
+
+
+def _copy_fixes(old: str, new: str):
+    """(old, new, what) with the slips models make copying from read_file undone: the line
+    numbers pasted in, or every line shifted by the same indentation. Tried only when the text
+    as given matches nowhere."""
+    rows = old.split("\n")
+    if all(LINE_NUMBER.match(r) for r in rows if r.strip()):
+        unnum = lambda t: "\n".join(LINE_NUMBER.sub("", r, count=1) for r in t.split("\n"))
+        yield unnum(old), unnum(new), "with the line numbers taken out"
+    lead = min((len(r) - len(r.lstrip(" ")) for r in rows if r.strip()), default=0)
+    for k in range(lead, 0, -1):
+        cut = lambda t: "\n".join(r[k:] if r[:k] == " " * k else r for r in t.split("\n"))
+        yield cut(old), cut(new), f"with {k} space{'s' * (k > 1)} less indentation on every line"
+
+
 def edit_file(ws: Path, path: str, old_text: str, new_text: str) -> str:
     target = _resolve(ws, path)
     if not target.is_file():
         raise ToolError(f"'{path}' does not exist")
     text = target.read_text()
     count = text.count(old_text) if old_text else 0
+    how = ""
+    if count == 0 and old_text.strip():
+        for old, new, what in _copy_fixes(old_text, new_text):
+            if text.count(old) == 1:
+                old_text, new_text, count, how = old, new, 1, f" (old_text matched {what})"
+                break
     if count != 1:
         raise ToolError(f"old_text must match exactly once, but it matched {count} times. "
                         "Read the file again and copy the exact text, with more context if needed.")
     target.write_text(text.replace(old_text, new_text, 1))
-    return f"Edited {target.relative_to(ws)}"
+    return f"Edited {target.relative_to(ws)}{how}"
+
+
+def shell_env() -> dict:
+    """The environment the agent's commands run in: the user's, without Agent Chat's own
+    virtualenv, which `uv run` puts first on PATH. Otherwise `python` and `pip` in a command
+    would be the app's, missing the user's packages, and an install would change the app."""
+    env = dict(os.environ)
+    env.pop("VIRTUAL_ENV", None)
+    if sys.prefix != sys.base_prefix:  # running in a virtualenv: take its bin folder off PATH
+        venv_bin = os.path.normcase(os.path.realpath(os.path.join(sys.prefix, "bin")))
+        env["PATH"] = os.pathsep.join(d for d in env.get("PATH", "").split(os.pathsep)
+                                      if d and os.path.normcase(os.path.realpath(d)) != venv_bin)
+    return env
 
 
 async def run_shell(ws: Path, command: str, timeout: float | None = SHELL_TIMEOUT,
@@ -238,7 +278,7 @@ async def run_shell(ws: Path, command: str, timeout: float | None = SHELL_TIMEOU
         with open(log, "wb") as fout:
             proc = await asyncio.create_subprocess_shell(
                 command, cwd=ws, stdin=asyncio.subprocess.DEVNULL, stdout=fout,
-                stderr=asyncio.subprocess.STDOUT, start_new_session=True,
+                stderr=asyncio.subprocess.STDOUT, start_new_session=True, env=shell_env(),
             )
         rel = log.relative_to(ws)
         return (f"Started in the background (pid {proc.pid}). It keeps running after this call. "
@@ -249,7 +289,7 @@ async def run_shell(ws: Path, command: str, timeout: float | None = SHELL_TIMEOU
         with open(out_file, "wb") as fout:
             proc = await asyncio.create_subprocess_shell(
                 command, cwd=ws, stdin=asyncio.subprocess.DEVNULL, stdout=fout,
-                stderr=asyncio.subprocess.STDOUT, start_new_session=True,
+                stderr=asyncio.subprocess.STDOUT, start_new_session=True, env=shell_env(),
             )
         try:
             waiter = asyncio.ensure_future(proc.wait())

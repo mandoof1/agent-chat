@@ -74,8 +74,8 @@ need() { command -v "$1" >/dev/null 2>&1 || die "this installer needs '$1'. Inst
 
 # A directory path without repeated or trailing slashes ("/" stays "/").
 normdir() {
-  local p="$1"
-  while :; do case "$p" in *//*) p="${p//\/\//\/}" ;; *) break ;; esac; done
+  local p
+  p=$(printf '%s' "$1" | tr -s /)  # (not ${p//\/\//\/}: bash 3.2, macOS's, keeps the backslash)
   [ "$p" = / ] || p="${p%/}"
   printf '%s' "$p"
 }
@@ -346,13 +346,13 @@ get_tui() {
     note "terminal client skipped (AGENT_CHAT_NO_TUI=1)"
     return 0
   fi
-  if [ "$OS-$ARCH" = "linux-x86_64" ] && [ "${AGENT_CHAT_BUILD_TUI:-}" != 1 ]; then
+  if [ "${AGENT_CHAT_BUILD_TUI:-}" != 1 ]; then
     if download_tui; then got=1; TUI_HOW="prebuilt"; fi
   fi
   if [ "$got" = 0 ]; then
     if find_cargo >/dev/null; then
       if build_tui; then got=1; TUI_HOW="built with cargo"; fi
-    elif [ "$OS-$ARCH" != "linux-x86_64" ] || [ "${AGENT_CHAT_BUILD_TUI:-}" = 1 ]; then
+    else
       note "no prebuilt terminal client for $OS-$ARCH and no cargo to build one (https://rustup.rs);"
       note "the web UI (agent-chat web) has everything. Install Rust and update to add it later."
     fi
@@ -369,12 +369,14 @@ get_tui() {
   fi
 }
 
+# Releases carry agent-chat-tui-<os>-<arch> for linux-x86_64, linux-aarch64, macos-aarch64 and
+# macos-x86_64 (older ones only the first); anything else is built with cargo.
 download_tui() {
-  local url="${AGENT_CHAT_TUI_URL:-$REPO/releases/download/$TAG/agent-chat-tui-linux-x86_64}"
+  local url="${AGENT_CHAT_TUI_URL:-$REPO/releases/download/$TAG/agent-chat-tui-$OS-$ARCH}"
   local sum_url="${AGENT_CHAT_TUI_SHA256_URL:-$url.sha256}" want got
   say "downloading the terminal client"
   if ! fetch "$url" "$WORK/agent-chat-tui" quiet; then
-    warn "no prebuilt terminal client at $url"
+    note "no prebuilt terminal client for $OS-$ARCH in $TAG"
     return 1
   fi
   if ! fetch "$sum_url" "$WORK/agent-chat-tui.sha256" quiet; then

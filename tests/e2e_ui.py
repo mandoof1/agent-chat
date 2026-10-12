@@ -74,6 +74,7 @@ async def desktop(page):
     print("== approval card: approve all for this run auto-approves the second command")
     await page.click(".agent-row[data-agent='coder']")
     await page.click("#new-chat-btn")
+    await expect(page.locator("#hdr-title")).to_have_text("New chat")  # opened: its (empty) draft is in the box
     await page.fill("#input", "shell twice: echo one")
     await page.keyboard.press("Enter")
     await expect(page.locator(".approval-box")).to_be_visible(timeout=10000)
@@ -543,10 +544,11 @@ async def cleared_outputs_are_tagged(page):
             .observe(document.querySelector('#messages'), { subtree: true, childList: true }); }""")
     await send(page, "readloop 10")
     assert await page.evaluate("window.__liveCleared"), "the live turn's cards are tagged as the outputs are cleared"
-    cleared = [m for m in (await chat_now(page))["messages"] if m.get("_cleared")]
-    assert len(cleared) >= 2, len(cleared)
+    msgs = (await chat_now(page))["messages"]
+    cleared = sum(bool(m.get("_cleared")) for m in msgs) + sum(len(m.get("_cleared_args") or {}) for m in msgs)
+    assert cleared >= 2, cleared  # outputs, and the file written in full
     tags = page.locator("#history .tool-card .t-cleared")
-    await expect(tags).to_have_count(len(cleared))
+    await expect(tags).to_have_count(cleared)
     assert "still here" in (await tags.first.get_attribute("title"))
     await expect(page.locator("#history .tool-card")).to_have_count(11)  # the write and every read keep a card
     await shot(page, "ui-cleared")

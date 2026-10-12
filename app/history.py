@@ -6,8 +6,10 @@ keep the full history; chat["compactions"] records each summary and the message 
 verbatim part resumes.
 
 Before that, old tool outputs are cleared: the model sees a short placeholder in their place
-(`_cleared` on the message; the chat keeps the output). It costs no model call, and a tool can
-always be run again, so it comes first and makes compaction rarer.
+(`_cleared` on the message; the chat keeps the output), and so are the contents of old
+write_file calls, which the file holds (`_cleared_args` on the assistant message, by call id).
+It costs no model call, and a tool can always be run again, so it comes first and makes
+compaction rarer.
 """
 
 import json
@@ -29,7 +31,8 @@ CONTINUE_TAIL = 24000          # chars of a cut-off reply's thinking handed back
 CONTINUE_FRACTION = 0.1        # ...but no more than this share of the context (each, thinking and answer)
 CLEAR_AT = 0.7                 # old tool outputs are cleared past this share of the compaction trigger...
 CLEAR_TO = 0.4                 # ...down to this share of it, in one batch (each batch breaks the prompt cache once)
-KEEP_OUTPUTS = 3               # the newest tool outputs are never cleared, nor any of the current step's
+KEEP_OUTPUTS = 3               # the newest tool outputs are never cleared (as many as fit in KEEP_FRACTION
+                               # of the window: three whole-file reads fill an 8k one), nor the current step's
 CLEAR_MIN_CHARS = 1000         # shorter outputs aren't worth a placeholder
 KEPT_TOOLS = {"ask_agent", "remember", "recall_memory", "forget_memory"}  # a teammate's report, memory: kept
 OUTPUT_FRACTION = 0.25         # most of the context one tool output may take
@@ -97,11 +100,9 @@ def to_llm(messages: list[dict], memory: bool = True, images: bool = False) -> l
             if k + 1 == len(live) or live[k + 1] not in cut_off:  # a run of them resumes from the newest
                 out.append(continuation(m))
             continue
-        clean = {k: v for k, v in m.items() if not k.startswith("_")}
+        clean = {k: v for k, v in sent(m).items() if not k.startswith("_")}
         if i < last_user:
             clean.pop("reasoning_content", None)
-        if m.get("_cleared") and m.get("role") == "tool":
-            clean["content"] = cleared_note(m)
         if m.get("_queued") and m.get("role") == "user":
             clean["content"] = f"{QUEUED_NOTE}\n{m['content']}"
         if memory and m.get("_recall") and m.get("role") == "user":
@@ -117,6 +118,28 @@ def cleared_note(m: dict) -> str:
     """What the model sees in place of a cleared tool output (fixed, so the prompt cache holds)."""
     return (f"[Output cleared to save context: it was {len(m.get('content') or ''):,} characters. "
             "Run the tool again if you need it.]")
+
+
+def cleared_args(tc: dict) -> str:
+    """A write_file call's arguments with the content left out (the file holds it); fixed, like
+    cleared_note."""
+    try:
+        args = json.loads(tc["function"]["arguments"] or "{}")
+        n = len(args["content"])
+    except (ValueError, KeyError, TypeError):
+        return tc["function"]["arguments"]
+    args["content"] = f"[{n:,} characters, cleared to save context: read {args.get('path') or 'the file'} for what it holds now]"
+    return json.dumps(args, ensure_ascii=False)
+
+
+def sent(m: dict) -> dict:
+    """`m` as clearing leaves it for the model (its private fields still on)."""
+    if m.get("_cleared") and m.get("role") == "tool":
+        m = m | {"content": cleared_note(m)}
+    if m.get("_cleared_args") and m.get("tool_calls"):
+        m = m | {"tool_calls": [tc | {"function": tc["function"] | {"arguments": cleared_args(tc)}}
+                                if tc["id"] in m["_cleared_args"] else tc for tc in m["tool_calls"]]}
+    return m
 
 
 def continuation(m: dict) -> dict:
@@ -188,8 +211,7 @@ def choose_cut(msgs: list[dict], start: int, keep_chars: float | None) -> int | 
         return cut if cut and cut - start >= 2 else None
     acc, cut = 0, len(msgs)
     for i in range(len(msgs) - 1, start, -1):
-        m = msgs[i] | {"content": cleared_note(msgs[i])} if msgs[i].get("_cleared") else msgs[i]
-        acc += len(json.dumps(m, ensure_ascii=False))
+        acc += len(json.dumps(sent(msgs[i]), ensure_ascii=False))
         if acc > keep_chars:
             break
         cut = i
@@ -223,24 +245,41 @@ def clear_outputs(chat: dict, *, n_ctx: int, trigger: float, fixed_chars: int = 
     start = prev["upto"] if prev else 0
     names = {tc["id"]: tc["function"]["name"] for m in msgs[start:] for tc in m.get("tool_calls") or []}
     last_call = next((m for m in reversed(msgs) if m.get("tool_calls")), None)
-    keep = {tc["id"] for tc in (last_call or {}).get("tool_calls") or []}
-    keep |= {m["tool_call_id"] for m in [m for m in msgs[start:] if m.get("role") == "tool"][-KEEP_OUTPUTS:]}
-    candidates = [m for m in msgs[start:] if m.get("role") == "tool" and not m.get("_cleared")
-                  and m["tool_call_id"] not in keep and names.get(m["tool_call_id"]) not in KEPT_TOOLS
-                  and len(m.get("content") or "") >= CLEAR_MIN_CHARS]
+    step = {tc["id"] for tc in (last_call or {}).get("tool_calls") or []}  # the current step's calls
+    keep = set(step)  # ...and the newest outputs
+    budget = n_ctx * KEEP_FRACTION * chars_per_token(chat)
+    for m in [m for m in msgs[start:] if m.get("role") == "tool" and not m.get("_cleared")][::-1][:KEEP_OUTPUTS]:
+        budget -= len(m.get("content") or "")
+        if budget < 0 and m["tool_call_id"] not in keep:
+            break
+        keep.add(m["tool_call_id"])
+    wire = lambda text: len(json.dumps(text, ensure_ascii=False))
+    candidates = []  # (message, call id, chars it frees), oldest first
+    for m in msgs[start:]:
+        if (m.get("role") == "tool" and not m.get("_cleared") and m["tool_call_id"] not in keep
+                and names.get(m["tool_call_id"]) not in KEPT_TOOLS and len(m.get("content") or "") >= CLEAR_MIN_CHARS):
+            candidates.append((m, m["tool_call_id"], wire(m["content"]) - wire(cleared_note(m))))
+        for tc in m.get("tool_calls") or []:  # a whole file in write_file's arguments: the file holds it
+            if (tc["function"]["name"] == "write_file" and tc["id"] not in step and tc["id"] not in (m.get("_cleared_args") or {})
+                    and len(tc["function"]["arguments"] or "") >= CLEAR_MIN_CHARS):
+                candidates.append((m, tc["id"], wire(tc["function"]["arguments"]) - wire(cleared_args(tc))))
     current = size(payload(chat), None) + fixed_chars
     target = 0 if everything else trigger * CLEAR_TO * chars_per_token(chat)
     chosen, freed = [], 0
-    for m in candidates:  # oldest first: the prompt cache holds up to the first one cleared
+    for c in candidates:  # oldest first: the prompt cache holds up to the first one cleared
         if current - freed <= target:
             break
-        freed += len(json.dumps(m["content"], ensure_ascii=False)) - len(json.dumps(cleared_note(m), ensure_ascii=False))
-        chosen.append(m)
+        freed += c[2]
+        chosen.append(c)
     if not chosen or estimate(chat, freed) < (0 if everything else n_ctx * MIN_GAIN):
         return []
-    for m in chosen:
-        m["_cleared"] = {"at": time.time(), "upto": len(msgs)}
-    return [m["tool_call_id"] for m in chosen]
+    for m, call_id, _ in chosen:
+        mark = {"at": time.time(), "upto": len(msgs)}
+        if m.get("role") == "tool":
+            m["_cleared"] = mark
+        else:
+            m.setdefault("_cleared_args", {})[call_id] = mark
+    return list(dict.fromkeys(call_id for _, call_id, _ in chosen))
 
 
 def _clip(text: str, limit: int) -> str:
@@ -345,9 +384,11 @@ async def compact(run, agent: dict, chat: dict, *, path: list, n_ctx: int, reaso
         prompt += f"Write the updated summary now, in at most about {summary_tokens * 3 // 4} words."
         comp = llm.Completion()
         try:
+            # no thinking first: a reasoning model can spend the whole reply on it and leave no
+            # summary (Qwen3.5-4B in an 8k window did), and it takes minutes on a small GPU
             await llm.stream_chat(client, settings, model=agent["model"], temperature=agent["temperature"], tools=None,
                                   messages=[{"role": "system", "content": SUMMARY_PROMPT}, {"role": "user", "content": prompt}],
-                                  out=comp, on_delta=on_delta, llama=run.llama)
+                                  out=comp, on_delta=on_delta, llama=run.llama, thinking=False)
             break
         except llm.LLMError as e:
             if attempt == 2 or not is_overflow(e):
@@ -380,3 +421,8 @@ def prune(chat: dict, length: int) -> None:
     for m in chat["messages"][:length]:
         if (m.get("_cleared") or {}).get("upto", 0) > length:
             del m["_cleared"]
+        for call_id, mark in list((m.get("_cleared_args") or {}).items()):
+            if mark.get("upto", 0) > length:
+                del m["_cleared_args"][call_id]
+        if m.get("_cleared_args") == {}:
+            del m["_cleared_args"]

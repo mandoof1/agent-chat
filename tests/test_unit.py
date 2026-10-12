@@ -168,6 +168,46 @@ def test_old_tool_outputs_are_cleared_oldest_first():
     assert not any(m.get("_cleared") for m in chat["messages"])
 
 
+def test_old_write_file_contents_are_cleared_too():
+    # coding in a small window: the biggest items are files written in full, which are on disk anyway
+    cpt, body = 3.6, "x = 1\n" * 1200
+    def write(i):
+        return [{"role": "assistant", "content": "", "tool_calls": [{"id": f"w{i}", "type": "function", "function": {
+                    "name": "write_file", "arguments": json.dumps({"path": f"f{i}.py", "content": body})}}]},
+                {"role": "tool", "tool_call_id": f"w{i}", "content": f"Wrote {len(body)} bytes to f{i}.py"}]
+    chat = {"messages": [{"role": "user", "content": "go"}] + write(0) + write(1) + write(2), "stats": {"chars_per_token": cpt}}
+    ids = history.clear_outputs(chat, n_ctx=8192, trigger=8192 * 0.7)
+    assert ids and ids[0] == "w0" and "w2" not in ids, ids  # w2: the current step
+    calls = [m["tool_calls"][0] for m in history.to_llm(chat["messages"]) if m.get("tool_calls")]
+    args = json.loads(calls[0]["function"]["arguments"])  # still valid JSON for the chat template
+    assert args["path"] == "f0.py" and args["content"].startswith("[7,200 characters, cleared to save context: read f0.py")
+    assert json.loads(calls[2]["function"]["arguments"])["content"] == body
+    assert json.loads(chat["messages"][1]["tool_calls"][0]["function"]["arguments"])["content"] == body, "the chat keeps it"
+    chat["messages"] = chat["messages"][:3]
+    history.prune(chat, 3)
+    assert "_cleared_args" not in chat["messages"][1], "an edit back to before the clearing restores it"
+
+
+def test_reading_past_the_end_says_how_long_the_file_is():
+    from pathlib import Path
+    ws = Path(tempfile.mkdtemp(prefix="ac-read-"))
+    (ws / "a.py").write_text("one\ntwo\n")
+    assert tools.read_file(ws, "a.py", 200, 300) == "(nothing from line 200 on: a.py has 2 lines)"
+    (ws / "e.py").write_text("")
+    assert tools.read_file(ws, "e.py") == "(empty file)"
+
+
+def test_in_a_small_window_fewer_outputs_are_kept():
+    # three whole-file reads of ~2.3k tokens fill an 8k window: keep what fits in KEEP_FRACTION of
+    # it (the current step's always), so clearing works instead of leaving it all to compaction
+    cpt = 3.6
+    chat = {"messages": [{"role": "user", "content": "go"}] + tool_steps(4, int(2300 * cpt)), "stats": {"chars_per_token": cpt}}
+    ids = history.clear_outputs(chat, n_ctx=8192, trigger=8192 * 0.7)
+    assert ids and "c3" not in ids and {"c0", "c1"} <= set(ids), ids
+    chat = {"messages": [{"role": "user", "content": "go"}] + tool_steps(4, int(2300 * cpt)), "stats": {"chars_per_token": cpt}}
+    assert history.clear_outputs(chat, n_ctx=65536, trigger=65536 * 0.7) == [], "a big window keeps them"
+
+
 def test_clearing_that_frees_little_is_skipped():
     chat = {"messages": [{"role": "user", "content": "go"}] + tool_steps(5, 1500), "stats": {"chars_per_token": 3.6}}
     assert history.clear_outputs(chat, n_ctx=32768, trigger=1000) == [] and not any(m.get("_cleared") for m in chat["messages"])
@@ -240,6 +280,56 @@ def test_agent_loop_does_not_compact_over_and_over():
     answer, calls, comps = loop(32768, 12000, steps=25, think_tokens=0)
     assert answer == "done" and comps == [] and max(calls) < 32768 * 0.7, (calls, comps)
     assert 1 <= len(cleared) <= 6, cleared
+
+
+def test_edit_file_forgives_what_models_copy_from_read_file():
+    from pathlib import Path
+    ws = Path(tempfile.mkdtemp(prefix="ac-edit-"))
+    (ws / "a.py").write_text("def f(x):\n    return x\n\n\ndef g():\n    pass\n\n\ndef h():\n    pass\n")
+    assert tools.read_file(ws, "a.py").startswith("     1\tdef f(x):\n     2\t    return x")
+    # Qwen3.5-4B, 8k window: every line copied with the two spaces that used to follow the number
+    out = tools.edit_file(ws, "a.py", "  def f(x):\n      return x", "  def f(x):\n      return x + 1")
+    assert "2 spaces less indentation" in out
+    out = tools.edit_file(ws, "a.py", "     5\tdef g():\n     6\t    pass", "     5\tdef g():\n     6\t    return 2")
+    assert "line numbers taken out" in out
+    assert (ws / "a.py").read_text().startswith("def f(x):\n    return x + 1\n\n\ndef g():\n    return 2\n")
+    for bad in ("    return", "nothing like it"):  # twice, or nowhere even after the fixes: still refused
+        try:
+            tools.edit_file(ws, "a.py", bad, "x")
+            raise AssertionError(bad)
+        except tools.ToolError as e:
+            assert "must match exactly once" in str(e)
+
+
+def test_shell_commands_run_outside_the_apps_virtualenv():
+    # `uv run` puts the app's .venv first on PATH: an agent's `python` / `pip` must be the user's
+    out = asyncio.run(tools.run_shell(tools.workspace_for({"workspace": tempfile.mkdtemp(prefix="ac-shell-")}), 'echo "venv=[$VIRTUAL_ENV]"; command -v python3 || true'))
+    assert "venv=[]" in out, out
+    if sys.prefix != sys.base_prefix:  # these tests run in one
+        assert os.path.realpath(sys.prefix) not in out, out
+
+
+def test_thinking_is_switched_off_only_where_asked_and_understood():
+    import httpx
+    from app import llm
+    sent = []
+
+    def reply(request):
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, text='data: {"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]}\n\ndata: [DONE]\n\n')
+
+    async def go(**kw):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as c:
+            out = llm.Completion()
+            async def nop(*a): pass
+            await llm.stream_chat(c, {"base_url": "http://m/v1"}, model="m", messages=[], tools=None, temperature=None,
+                                  out=out, on_delta=nop, **kw)
+            return out.content
+    assert asyncio.run(go(llama=True, thinking=False)) == "ok"
+    asyncio.run(go(llama=True))
+    asyncio.run(go(llama=False, thinking=False))  # other servers may reject fields they don't know
+    assert sent[0]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "chat_template_kwargs" not in sent[1] and "chat_template_kwargs" not in sent[2]
 
 
 def test_overflow_detection():

@@ -532,7 +532,7 @@ function appendAssistant(container, m, results, index) {
     const card = toolCard(tc.function.name, args, false);
     const res = results.get(tc.id);
     if (res?._bypassed) card.markBypassed(res._bypass_reason);
-    if (res?._cleared) card.markCleared();
+    if (res?._cleared || m._cleared_args?.[tc.id]) card.markCleared();  // its output, or a written file's content
     if (res?._sub && card.subBody) {
       if (res._sub.continued) card.setContinued();
       card.setChat(res._sub.chat_id);

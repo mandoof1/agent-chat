@@ -1308,6 +1308,11 @@ mod tests {
     async fn the_help_wraps_its_rows_and_scrolls_on_a_short_screen() {
         use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
         let mut app = plain_app();
+        // keys a person presses, 200 ms apart: with Instant::now() a fast machine delivers them
+        // within the keystroke-paste window, and the Esc after the `x` is dropped as paste leftovers
+        let start = std::time::Instant::now();
+        let mut presses = 0u64;
+        let mut at = move || { presses += 1; start + std::time::Duration::from_millis(200 * presses) };
         app.overlay = Some(Overlay::Help { scroll: 0 });
         let has = |rows: &[String], n: &str| rows.iter().any(|r| r.contains(n));
         let (_, rows) = shot(&mut app, 120, 40);
@@ -1319,19 +1324,19 @@ mod tests {
         let (_, rows) = shot(&mut app, 100, 24);
         assert!(has(&rows, "search chats and commands") && !has(&rows, "Ctrl+Q") && has(&rows, "scroll (1–"), "{}", rows.join("\n"));
         let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
-        app.on_input(std::time::Instant::now(), key(KeyCode::End), None).await;
+        app.on_input(at(), key(KeyCode::End), None).await;
         let (_, rows) = shot(&mut app, 100, 24);
         assert!(has(&rows, "Ctrl+Q") && has(&rows, "e edit agent · m mark all read") && !has(&rows, "search chats and commands"), "{}", rows.join("\n"));
-        app.on_input(std::time::Instant::now(), key(KeyCode::Home), None).await;
-        app.on_input(std::time::Instant::now(), key(KeyCode::Down), None).await;
+        app.on_input(at(), key(KeyCode::Home), None).await;
+        app.on_input(at(), key(KeyCode::Down), None).await;
         let (_, rows) = shot(&mut app, 100, 24);
         assert!(!has(&rows, "search chats and commands") && has(&rows, "scroll (2–"), "one row down:\n{}", rows.join("\n"));
         // narrow: long rows wrap under their description instead of being cut off
         let (_, rows) = shot(&mut app, 50, 60);
         assert!(has(&rows, "Keyboard shortcuts") && has(&rows, "m mark all read"), "{}", rows.join("\n"));
-        app.on_input(std::time::Instant::now(), key(KeyCode::Char('x')), None).await;
+        app.on_input(at(), key(KeyCode::Char('x')), None).await;
         assert!(matches!(app.overlay, Some(Overlay::Help { .. })), "other keys keep it open");
-        app.on_input(std::time::Instant::now(), key(KeyCode::Esc), None).await;
+        app.on_input(at(), key(KeyCode::Esc), None).await;
         assert!(app.overlay.is_none());
     }
 
