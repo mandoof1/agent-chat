@@ -76,6 +76,7 @@ async def stream_chat(
     out: Completion,
     on_delta: Callable[..., Awaitable[None]],  # (kind, text) or (kind, text, meta) for tool calls
     llama: bool = True,  # the server is llama-server: ask for its per-token timings (other servers may reject unknown fields)
+    thinking: bool = True,  # False: a reasoning model answers without thinking first (llama-server: Qwen and others)
 ) -> Completion:
     body = {
         "model": model or settings.get("model") or "local",
@@ -85,6 +86,8 @@ async def stream_chat(
     }
     if llama:
         body["timings_per_token"] = True  # token counts on every chunk, for the live context meter
+        if not thinking:  # a chat-template switch: templates without it ignore it
+            body["chat_template_kwargs"] = {"enable_thinking": False}
     if tools:
         body["tools"] = tools
     if temperature is not None:

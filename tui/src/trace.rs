@@ -286,7 +286,9 @@ fn append_assistant(steps: &mut Vec<Step>, m: &Value, results: &std::collections
         let name = tc.get("function").map(|f| s(f, "name")).unwrap_or_default();
         let raw = tc.get("function").map(|f| s(f, "arguments")).unwrap_or_default();
         let args = serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| serde_json::json!({ "_raw": raw }));
-        let mut tool = ToolStep { call_id: id.clone(), name: name.clone(), args: args.clone(), raw_args: String::new(), state: ToolState::Running, result: None, live_out: None, approval: None, bypassed: None, cleared: false, sub: None };
+        // a written file's content cleared from what the model sees (the file holds it)
+        let args_cleared = m.get("_cleared_args").and_then(|a| a.get(&id)).is_some_and(|c| !c.is_null());
+        let mut tool = ToolStep { call_id: id.clone(), name: name.clone(), args: args.clone(), raw_args: String::new(), state: ToolState::Running, result: None, live_out: None, approval: None, bypassed: None, cleared: args_cleared, sub: None };
         if let Some(res) = results.get(&id) {
             let text = s(res, "content");
             tool.state = tool_state_for(&name, &text);
@@ -294,7 +296,7 @@ fn append_assistant(steps: &mut Vec<Step>, m: &Value, results: &std::collections
                 // 'run' (approve-all) or 'settings' (bypass on); older chats saved no reason
                 tool.bypassed = Some(res.get("_bypass_reason").and_then(|r| r.as_str()).unwrap_or("settings").to_string());
             }
-            tool.cleared = res.get("_cleared").is_some_and(|c| !c.is_null());
+            tool.cleared |= res.get("_cleared").is_some_and(|c| !c.is_null());
             if let Some(sub) = res.get("_sub") {
                 let aid = s(sub, "agent_id");
                 let who = Who::from(agents.iter().find(|a| a.id == aid), &aid);
@@ -1759,17 +1761,20 @@ mod tests {
             { "role": "assistant", "content": "", "tool_calls": [call("t1"), call("t2")] },
             { "role": "tool", "tool_call_id": "t1", "content": "1 | hello", "_cleared": { "at": 1.0, "upto": 3 } },
             { "role": "tool", "tool_call_id": "t2", "content": "1 | world" },
+            { "role": "assistant", "content": "", "tool_calls": [{ "id": "w1", "function": { "name": "write_file", "arguments": "{\"path\": \"b.txt\", \"content\": \"x\"}" } }],
+              "_cleared_args": { "w1": { "at": 1.0, "upto": 6 } } },
+            { "role": "tool", "tool_call_id": "w1", "content": "Wrote 1 bytes to b.txt" },
         ] });
         let mut t = Trace::from_chat(&chat, &ag, None);
         let marks = |t: &Trace| -> Vec<bool> {
             let Entry::Turn(turn) = &t.entries[1] else { panic!("{:?}", t.entries.len()) };
             turn.steps.iter().filter_map(|s| match s { Step::Tool(t) => Some(t.cleared), _ => None }).collect()
         };
-        assert_eq!(marks(&t), [true, false]);
+        assert_eq!(marks(&t), [true, false, true], "an output, or a written file's content");
         let lines = texts(&render(&t, &opts(&th, 80, false)));
         assert_eq!(lines.iter().filter(|l| l.contains("read_file  a.txt  cleared  done")).count(), 1, "{lines:#?}");
         t.cleared(&[], &["t2".to_string(), "gone".to_string()], &ag); // live: an unknown id is ignored
-        assert_eq!(marks(&t), [true, true]);
+        assert_eq!(marks(&t), [true, true, true]);
     }
 
     #[test]

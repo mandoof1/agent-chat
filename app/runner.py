@@ -51,6 +51,18 @@ global_subs: set[asyncio.Queue] = set()
 memory_task: asyncio.Task | None = None  # background work after a turn: naming the chat, memory extraction
 
 
+_llama: dict[str, bool] = {}  # model server address -> is it llama-server
+
+
+async def is_llama(settings: dict) -> bool:
+    """Whether the model server is llama-server (asked once per address), for requests made
+    outside a run: titles and memory."""
+    base = settings.get("base_url") or ""
+    if base not in _llama:
+        _llama[base] = (await llm.server_info(client, settings)).get("kind") == "llama"
+    return _llama[base]
+
+
 def broadcast(event: dict) -> None:
     for q in list(global_subs):
         q.put_nowait(event)
@@ -803,9 +815,10 @@ async def _title(chat_id: str, agent: dict) -> None:
         pass
 
     try:
-        await llm.stream_chat(client, store.get_settings(), model=agent["model"], tools=None, temperature=None,
+        settings = store.get_settings()
+        await llm.stream_chat(client, settings, model=agent["model"], tools=None, temperature=None,
                               messages=[{"role": "system", "content": TITLE_PROMPT}, {"role": "user", "content": excerpt}],
-                              out=comp, on_delta=ignore, llama=False)
+                              out=comp, on_delta=ignore, llama=await is_llama(settings), thinking=False)
     except llm.LLMError:
         return
     title = comp.content.strip().splitlines()[0].strip().strip('"\'“”').rstrip(".") if comp.content.strip() else ""
@@ -844,8 +857,9 @@ async def tidy_memory() -> str:
         async def ignore(kind: str, text: str, meta: dict | None = None) -> None:
             pass
 
-        await llm.stream_chat(client, store.get_settings(), model="", tools=None, temperature=None,
-                              messages=request, out=comp, on_delta=ignore, llama=False)
+        settings = store.get_settings()
+        await llm.stream_chat(client, settings, model="", tools=None, temperature=None,
+                              messages=request, out=comp, on_delta=ignore, llama=await is_llama(settings), thinking=False)
         changes = memory.apply_extraction(comp.content, source="tidy")
         broadcast({"type": "memory_changed", "by": "tidy", **changes})
         return (f"Tidied: {len(changes['updated'])} updated, {len(changes['deleted'])} removed."
@@ -870,8 +884,10 @@ async def _extract(chat_id: str, agent: dict) -> None:
         async def ignore(kind: str, text: str, meta: dict | None = None) -> None:
             pass
 
-        await llm.stream_chat(client, store.get_settings(), model=agent["model"], tools=None, temperature=None,
-                              messages=memory.extraction_request(_excerpt(new)), out=comp, on_delta=ignore, llama=False)
+        settings = store.get_settings()
+        await llm.stream_chat(client, settings, model=agent["model"], tools=None, temperature=None,
+                              messages=memory.extraction_request(_excerpt(new)), out=comp, on_delta=ignore,
+                              llama=await is_llama(settings), thinking=False)
         changes = memory.apply_extraction(comp.content, source=f"auto:{chat_id}")
         chat = store.get_chat(chat_id)
         if chat and chat_id not in views:
