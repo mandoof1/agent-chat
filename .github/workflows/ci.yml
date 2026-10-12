@@ -1,0 +1,83 @@
+name: CI
+
+# Every suite in tests/, against the mock model servers (no GPU), plus the installer on Linux
+# and macOS. Locally the same runs as tests/run_all.sh and tests/install_smoke.sh.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  app:
+    name: App and API
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: SKIP_TUI=1 tests/run_all.sh --no-ui
+
+  web-ui:
+    name: Web UI (headless Chrome)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: SKIP_TUI=1 SUITES=browser,ui,ui-more BROWSER_EXECUTABLE="$(command -v google-chrome)" tests/run_all.sh --ui
+
+  tui-unit:
+    name: Terminal client unit tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tui
+      - run: cargo test --locked
+        working-directory: tui
+
+  tui-e2e:
+    name: Terminal client end to end (${{ matrix.suite }})
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [tui, tui-keys, tui-render, tui-slash]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tui
+      - run: SUITES=${{ matrix.suite }} tests/run_all.sh --no-ui
+
+  install:
+    name: Installer (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install this commit (terminal client built with cargo), start, stop, uninstall
+        run: AGENT_CHAT_NO_TUI=0 tests/install_smoke.sh

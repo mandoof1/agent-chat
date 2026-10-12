@@ -4,6 +4,7 @@
 # stops everything. Usage: tests/run_all.sh [--ui | --no-ui]   (the UI suite needs Brave + Playwright)
 # TEST_PORT_BASE (default 8766) moves every port, so two runs can share a machine: the mock
 # models listen on BASE, BASE+2, BASE+3, BASE+4 and the app on BASE+1. SKIP_TUI=1 skips the terminal client.
+# SUITES=unit,tui-keys runs just those (names as printed after ===; CI runs the slow ones side by side).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 WITH_UI=auto
@@ -33,7 +34,7 @@ curl -sf -X PUT "$AC_URL/api/settings" -H 'content-type: application/json' -H 'X
      -d "{\"base_url\":\"$MOCK_URL\"}" >/dev/null || { echo "the app did not start; see $TMP"; exit 1; }
 
 FAILED=()
-run() { local name=$1; shift; echo "=== $name"; if "$@" > "$TMP/$name.out" 2>&1; then echo "    ok"; else echo "    FAILED (see $TMP/$name.out)"; tail -15 "$TMP/$name.out"; FAILED+=("$name"); fi; }
+run() { local name=$1; shift; [[ -z "${SUITES:-}" || ",$SUITES," == *",$name,"* ]] || return 0; echo "=== $name"; if "$@" > "$TMP/$name.out" 2>&1; then echo "    ok"; else echo "    FAILED (see $TMP/$name.out)"; tail -15 "$TMP/$name.out"; FAILED+=("$name"); fi; }
 run unit      uv run python tests/test_unit.py
 run e2e       uv run python tests/e2e.py
 run features  uv run python tests/e2e_features.py
