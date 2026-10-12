@@ -173,7 +173,8 @@ async def test_clear_tool_outputs(c):
     marked |= {i for m in data["messages"] for i in m.get("_cleared_args") or {}}
     assert marked == {i for e in cleared for i in e["call_ids"]}
     assert all(len(m["content"]) > 20000 for m in outputs[1:]), "the chat keeps every output whole"
-    assert not any(m.get("_cleared") for m in outputs[-3:]), "the newest outputs stay"
+    flags = [bool(m.get("_cleared")) for m in outputs[1:]]  # the reads, oldest first
+    assert not flags[-1] and flags == sorted(flags, reverse=True), f"oldest first, the newest stays: {flags}"
     assert data["messages"][-1]["content"].startswith("Finished."), data["messages"][-1]
 
 
