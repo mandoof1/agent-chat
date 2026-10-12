@@ -2310,6 +2310,11 @@ impl App {
                 self.trace.bypassed(&path, d.get("call_id").and_then(|c| c.as_str()).unwrap_or(""), d.get("reason").and_then(|r| r.as_str()).unwrap_or("settings"), &agents);
                 self.touch();
             }
+            "outputs_cleared" => {
+                let ids: Vec<String> = d.get("call_ids").and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+                self.trace.cleared(&path, &ids, &agents);
+                self.touch();
+            }
             "notice" => {
                 let text = d.get("text").and_then(|t| t.as_str()).unwrap_or("");
                 self.trace.notice(&path, text, &agents);

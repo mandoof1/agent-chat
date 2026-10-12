@@ -406,6 +406,14 @@ Settings), the same model writes a summary of the older messages:
 
 - The model sees the summary plus the recent messages word for word.
 - Your chat still shows everything, with an expandable "Earlier messages summarized" marker.
+- Before it comes to that, old tool outputs are cleared: past 70% of the compaction point (49%
+  of the window by default) the oldest file reads, command outputs and pages are replaced, in
+  what the model sees, by a one-line note saying the tool can be run again. One batch takes the
+  context down to 40% of the compaction point, so llama-server's prompt cache is broken rarely,
+  and no model call is needed. The newest three outputs, the current step's, teammates' answers
+  and memory results stay. The cards keep their output, tagged "cleared"; editing or
+  regenerating an earlier message brings the outputs back. One tool output may take at most a
+  quarter of the window.
 - Compaction aims for half the trigger point, so a chat has room to grow before the next one.
   The system prompt, the tools, the request being worked on and the summary itself can't be
   summarized away, so the word-for-word part shrinks to make room for them. The summary is

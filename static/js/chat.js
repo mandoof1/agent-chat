@@ -472,6 +472,10 @@ function toolCard(name, args, live) {
       if (!summary.querySelector(".t-auto")) state.before(el("span", { class: "t-auto",
         title: reason === "run" ? "Ran without asking: you approved everything for this run" : "Ran without asking: permissions are bypassed" }, "auto-approved"));
     },
+    markCleared() {
+      if (!summary.querySelector(".t-cleared")) state.before(el("span", { class: "t-cleared",
+        title: "Cleared from what the model sees, to save context: it gets a short note instead and can run the tool again. The output is still here." }, "cleared"));
+    },
     approvalDone(approved, everything) {
       approvalBox?.remove();
       approvalBox = null;
@@ -528,6 +532,7 @@ function appendAssistant(container, m, results, index) {
     const card = toolCard(tc.function.name, args, false);
     const res = results.get(tc.id);
     if (res?._bypassed) card.markBypassed(res._bypass_reason);
+    if (res?._cleared) card.markCleared();
     if (res?._sub && card.subBody) {
       if (res._sub.continued) card.setContinued();
       card.setChat(res._sub.chat_id);
@@ -925,6 +930,7 @@ export function handleEvent(ev) {
     case "approval": S.live?.cards.get(ev.call_id)?.askApproval(ev.approval_id); break;
     case "approval_done": S.live?.cards.get(ev.call_id)?.approvalDone(ev.approved, ev.all); break;
     case "approval_bypassed": S.live?.cards.get(ev.call_id)?.markBypassed(ev.reason); break;
+    case "outputs_cleared": for (const id of ev.call_ids || []) S.live?.cards.get(id)?.markCleared(); break;
     case "notice": liveContainer(ev.path)?.body.append(noticeEl(ev.text)); break;
     case "error": S.live?.turn.body.append(errorBox(ev.message, S.chat?.messages.length)); break;
     case "stopped": break;

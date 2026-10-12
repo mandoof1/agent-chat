@@ -108,11 +108,15 @@ async def test_overflow(c):
     print("\n== overflow retry (mock rejects prompts > 6000 chars, auto-compact off)")
     await settings(c, base_url=MOCK_OVERFLOW, auto_compact=False)
     chat = (await c.post(f"{B}/api/chats", json={"agent_id": "assistant"})).json()["id"]
+    seen = []
     for i in range(1, 4):
         evs = await run_turn(c, chat, f"big {i}")
-        print(f"  turn {i}:", [e.get("message") or e.get("compaction", {}).get("reason") or e["type"]
-                              for e in evs if e["type"] in ("compact_end", "error")] or "ok")
+        seen.append([e.get("message") or e.get("compaction", {}).get("reason") or e["type"]
+                     for e in evs if e["type"] in ("compact_end", "error")])
+        print(f"  turn {i}:", seen[-1] or "ok")
     await settings(c, base_url=MOCK, auto_compact=True)
+    # the server's limit is far below the n_ctx it reports: compacting must still be tried, and work
+    assert seen == [[], ["overflow"], ["overflow"]], seen
 
 
 async def test_compact_instructions(c):
@@ -149,11 +153,35 @@ async def test_compact_instructions(c):
     assert "instructions" not in plain and "Kept as asked" not in plain["summary"] and plain["upto"] > saved["upto"]
 
 
+async def test_clear_tool_outputs(c):
+    print("\n== old tool outputs are cleared before anything is compacted")
+    await settings(c, base_url=MOCK, auto_compact=True, compact_at=70)
+    chat = (await c.post(f"{B}/api/chats", json={"agent_id": "coder"})).json()["id"]
+    await run_turn(c, chat, "write: " + "\n".join(f"line {i:04} " + "z" * 40 for i in range(400)))  # ~20k chars
+    evs = await run_turn(c, chat, "readloop 10")
+    cleared = [e for e in evs if e["type"] == "outputs_cleared"]
+    notices = [e["text"] for e in evs if e["type"] == "notice"]
+    data = (await c.get(f"{B}/api/chats/{chat}")).json()
+    outputs = [m for m in data["messages"] if m["role"] == "tool"]
+    print("  clears:", [(len(e["call_ids"]), e["before_tokens"], e["after_tokens"]) for e in cleared])
+    print("  outputs cleared in the chat file:", sum(bool(m.get("_cleared")) for m in outputs), "of", len(outputs))
+    print("  final:", data["messages"][-1]["content"][:60].replace("\n", " "))
+    assert cleared and not any(e["type"].startswith("compact") for e in evs), [e["type"] for e in evs]
+    assert all(e["after_tokens"] < e["before_tokens"] for e in cleared)
+    assert any(n.startswith("Cleared ") and "still shown here" in n for n in notices), notices
+    marked = {m["tool_call_id"] for m in outputs if m.get("_cleared")}
+    assert marked == {i for e in cleared for i in e["call_ids"]}
+    assert all(len(m["content"]) > 20000 for m in outputs[1:]), "the chat keeps every output whole"
+    assert not any(m.get("_cleared") for m in outputs[-3:]), "the newest outputs stay"
+    assert data["messages"][-1]["content"].startswith("Finished."), data["messages"][-1]
+
+
 async def main():
     async with httpx.AsyncClient(timeout=None, headers={"X-Agent-Chat": "1"}) as c:
         await test_subchat_view(c)
         await test_auto_compact(c)
         await test_overflow(c)
         await test_compact_instructions(c)
+        await test_clear_tool_outputs(c)
 
 asyncio.run(asyncio.wait_for(main(), 120))

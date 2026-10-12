@@ -7,6 +7,7 @@ Behaviour is keyed off the last user message:
   "shell: <cmd>"   -> calls run_shell
   "shell twice: <cmd>" -> calls run_shell, then again with "<cmd> again" (two approvals in one run)
   "write: <text>"  -> calls write_file notes.txt
+  "readloop N"     -> reads notes.txt N times in a row, then answers (tool outputs that pile up)
   "delegate"       -> calls ask_agent(Coder, "shell: echo hello from coder")
   "qa"             -> Orchestrator asks Coder to build something; Coder answers with a
                       QUESTION; Orchestrator replies; Coder must remember the original task
@@ -136,6 +137,11 @@ async def completions(request: Request):
               and sum(m["role"] == "tool" for m in msgs) < int(loop[1])):
             reasoning, text = "Keep going.", ""
             tool = ("list_dir", {})
+        elif (last["role"] == "tool" and "read_file" in tools
+              and (rl := re.match(r"readloop (\d+)", history.split(" | ")[-1]))
+              and sum(m["role"] == "tool" for m in msgs[max(i for i, m in enumerate(msgs) if m["role"] == "user"):]) < int(rl[1])):
+            reasoning, text = "Read it again.", ""
+            tool = ("read_file", {"path": "notes.txt"})
         elif last["role"] == "tool" and agent == "Orchestrator" and "QUESTION" in last["content"]:
             reasoning, text = "Coder asked which language. Answer it.", ""
             tool = ("ask_agent", {"agent": "Coder", "message": "Use Python."})
@@ -172,6 +178,8 @@ async def completions(request: Request):
                     delay = 0.03
             elif user.startswith("loop ") and "list_dir" in tools:
                 tool = ("list_dir", {})
+            elif user.startswith("readloop ") and "read_file" in tools:
+                tool = ("read_file", {"path": "notes.txt"})
             elif user.startswith("write code") and "write_file" in tools:
                 code = "\n".join(['"""Tiny CLI that greets people."""', "import argparse", "", "",
                                   "def greet(name: str, shout: bool = False) -> str:",
