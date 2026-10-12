@@ -24,6 +24,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
       - run: SKIP_TUI=1 tests/run_all.sh --no-ui
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ github.job }}
+          path: /tmp/agent-chat-tests.*/
+          if-no-files-found: ignore
 
   web-ui:
     name: Web UI (headless Chrome)
@@ -32,7 +38,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - run: SKIP_TUI=1 SUITES=browser,ui,ui-more BROWSER_EXECUTABLE="$(command -v google-chrome)" tests/run_all.sh --ui
+      - run: SKIP_TUI=1 SUITES=browser,ui,ui-more BROWSER_EXECUTABLE="$(command -v google-chrome)" UI_SHOTS=/tmp/agent-chat-tests.shots tests/run_all.sh --ui
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ github.job }}
+          path: |
+            /tmp/agent-chat-tests.*/
+            /tmp/agent-chat-tests.shots/
+          if-no-files-found: ignore
 
   tui-unit:
     name: Terminal client unit tests (${{ matrix.os }})
@@ -67,6 +81,12 @@ jobs:
         with:
           workspaces: tui
       - run: SUITES=${{ matrix.suite }} tests/run_all.sh --no-ui
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ github.job }}-${{ matrix.suite }}
+          path: /tmp/agent-chat-tests.*/
+          if-no-files-found: ignore
 
   install:
     name: Installer (${{ matrix.os }})

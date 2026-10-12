@@ -34,7 +34,7 @@ curl -sf -X PUT "$AC_URL/api/settings" -H 'content-type: application/json' -H 'X
      -d "{\"base_url\":\"$MOCK_URL\"}" >/dev/null || { echo "the app did not start; see $TMP"; exit 1; }
 
 FAILED=()
-run() { local name=$1; shift; [[ -z "${SUITES:-}" || ",$SUITES," == *",$name,"* ]] || return 0; echo "=== $name"; if "$@" > "$TMP/$name.out" 2>&1; then echo "    ok"; else echo "    FAILED (see $TMP/$name.out)"; tail -15 "$TMP/$name.out"; FAILED+=("$name"); fi; }
+run() { local name=$1; shift; [[ -z "${SUITES:-}" || ",$SUITES," == *",$name,"* ]] || return 0; echo "=== $name"; if "$@" > "$TMP/$name.out" 2>&1; then echo "    ok"; else echo "    FAILED (see $TMP/$name.out)"; tail -15 "$TMP/$name.out"; grep -E '^[A-Za-z.]*(Error|Exception)\b|^!! FAILED' "$TMP/$name.out" | tail -5 | sed 's/^/    >> /'; FAILED+=("$name"); fi; }
 run unit      uv run python tests/test_unit.py
 run e2e       uv run python tests/e2e.py
 run features  uv run python tests/e2e_features.py
