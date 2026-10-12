@@ -700,6 +700,8 @@ pub fn arg_summary(name: &str, a: &Value) -> String {
         "email_list" => format!("{}{}", if g("folder").is_empty() { "INBOX".to_string() } else { g("folder") }, if a.get("unread_only").and_then(|v| v.as_bool()).unwrap_or(false) { " · unread" } else { "" }),
         "email_send" | "email_draft" => format!("{} · {}", g("to"), g("subject")),
         "ask_agent" => one_line(&if g("message").is_empty() { g("task") } else { g("message") }, 80),
+        "find_tools" => if g("query").is_empty() { "all tools".into() } else { format!("“{}”", g("query")) },
+        "call_tool" => one_line(&format!("{} {}", g("tool"), a.get("arguments").map(|v| v.to_string()).unwrap_or_default()), 80),
         "calendar_events" => {
             let mut parts = vec![];
             if !g("query").is_empty() { parts.push(format!("“{}”", g("query"))); }

@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### MCP servers as agent tools
+- Settings → MCP takes servers in the `mcpServers` JSON shape MCP READMEs give for Claude
+  Desktop (stdio servers: a command, args, env). Tick a server under Tools in an agent's
+  settings and the agent can use its tools. **Test** starts it and shows its tools and their
+  context cost.
+- A server starts when an agent that has it begins a turn and keeps running, shared by every
+  agent, until its settings change or the app stops. A crash is reported with the end of the
+  server's stderr, and the next call starts it again. Stop and the per-server timeout cancel the
+  call on the server, and the server's progress messages show live on the tool card.
+- Small servers' tools are offered by name (`<server>__<tool>`). A server whose definitions would
+  take more than ~4K tokens is searched instead: the agent gets `find_tools` (keyword search
+  returning the best matches with their argument schemas) and `call_tool`. REA, the reverse
+  engineering server, has 170 tools worth about 67K tokens; a search returns about 1K.
+- A call asks you first unless the tool says it is read-only or non-destructive; per server,
+  `"confirm"` can be `"always"` or `"never"`. Images a tool returns are saved under `mcp/` in the
+  workspace.
+
 ## 0.3.2 — 2026-10-12
 
 ### Old tool outputs are cleared before anything is compacted

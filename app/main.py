@@ -18,10 +18,11 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Str
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, model_validator
 
-from . import agenda, browser, llm, mail, memory, routines, runner, store, tools
+from . import agenda, browser, llm, mail, mcp, memory, routines, runner, store, tools
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
 VERSION = "0.3.2"
+mcp.client_version = VERSION
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
@@ -35,6 +36,7 @@ async def lifespan(app: FastAPI):
     for run in list(runner.runs.values()):
         run.task.cancel()
     await browser.shutdown()
+    await mcp.shutdown()
     await runner.client.aclose()
 
 
@@ -105,7 +107,7 @@ async def health():
 @app.get("/api/state")
 async def state():
     return {"agents": store.list_agents(), "chats": await chats(), "settings": store.get_settings(),
-            "tools": tools.TOOL_INFO, "default_workspace": str(store.DEFAULT_WORKSPACE), "version": VERSION}
+            "tools": tools.TOOL_INFO + mcp.tool_info(), "default_workspace": str(store.DEFAULT_WORKSPACE), "version": VERSION}
 
 
 @app.get("/api/chats")
@@ -177,11 +179,39 @@ class SettingsIn(In):
     search_url: str | None = None
     browser_headless: bool | None = None
     browser_executable: str | None = None
+    mcp_servers: dict | None = None
 
 
 @app.put("/api/settings")
 async def put_settings(body: SettingsIn):
-    return store.save_settings(body.model_dump(exclude_none=True))
+    values = body.model_dump(exclude_none=True)
+    if "mcp_servers" in values:
+        try:
+            values["mcp_servers"] = mcp.parse_config(values["mcp_servers"])
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    changed = values.get("mcp_servers", store.get_settings()["mcp_servers"]) != store.get_settings()["mcp_servers"]
+    settings = store.save_settings(values)
+    if changed:
+        await mcp.reconfigure()
+        runner.broadcast({"type": "agents_changed"})  # the agent editor's tool list has the servers
+    return settings
+
+
+# --------------------------------------------------------------------- MCP
+
+@app.get("/api/mcp")
+async def mcp_status():
+    """The configured MCP servers: running or not, their tools, the last error."""
+    return mcp.status()
+
+
+@app.post("/api/mcp/{name}/test")
+async def mcp_test(name: str):
+    """(Re)start one MCP server and list its tools, for Settings → MCP → Test."""
+    if name not in mcp.configs():
+        raise HTTPException(404, "no MCP server by that name")
+    return await mcp.test(name)
 
 
 # ------------------------------------------------------------------ agents

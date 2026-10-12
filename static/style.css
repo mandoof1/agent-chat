@@ -693,10 +693,10 @@ dialog code { font: 12px var(--mono); background: var(--surface-3); padding: 1px
 .tab-pane { display: none; grid-template-columns: minmax(0, 1fr); gap: 12px; }
 .tab-pane.active { display: grid; }
 
-#memory-list, #routine-list, #calendar-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+#memory-list, #routine-list, #calendar-list, #mcp-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
 #memory-list { max-height: 50vh; overflow-y: auto; }
 #routine-list { max-height: 40vh; overflow-y: auto; }
-.mem-item, .routine-item, .cal-item { display: flex; gap: 10px; align-items: flex-start; min-width: 0; border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px 10px; background: var(--bg); }
+.mem-item, .routine-item, .cal-item, .mcp-item { display: flex; gap: 10px; align-items: flex-start; min-width: 0; border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px 10px; background: var(--bg); }
 .mem-item.pinned { border-color: color-mix(in srgb, var(--amber) 55%, var(--line)); }
 .mem-main { flex: 1; min-width: 0; display: grid; gap: 4px; }
 .mem-fact { font-size: 13.5px; outline: none; border-radius: 4px; padding: 1px 4px; margin: -1px -4px; }
@@ -710,9 +710,12 @@ dialog .mem-meta input.mem-imp { width: 52px; padding: 2px 6px; font: 12px var(-
 .routine-item.off { opacity: .6; }
 .routine-item > input[type=checkbox] { width: 18px; height: 18px; flex: none; accent-color: var(--accent); }
 .routine-name { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; }
-.cal-item { align-items: center; font-size: 13.5px; }
-.cal-item b { font-weight: 700; }
+.cal-item, .mcp-item { align-items: center; font-size: 13.5px; }
+.cal-item b, .mcp-item b { font-weight: 700; }
 .cal-item .grow { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11.5px var(--mono); }
+.mcp-item { flex-wrap: wrap; }
+.mcp-item .grow { white-space: pre-wrap; overflow-wrap: anywhere; }
+textarea.code-input { font: 12px/1.45 var(--mono); }
 .days { display: flex; flex-wrap: wrap; gap: 6px; }
 .days .day { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; padding: 5px 9px; border-radius: 4px; border: 1px solid var(--line-2); font: 500 12.5px var(--font); color: var(--text); }
 .days .day:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }

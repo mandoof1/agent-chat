@@ -32,7 +32,7 @@ from datetime import date
 
 import httpx
 
-from . import agenda, browser, history, llm, mail, memory, store, tools
+from . import agenda, browser, history, llm, mail, mcp, memory, store, tools
 from .history import repair
 
 MAX_DEPTH = 3
@@ -253,8 +253,10 @@ def system_prompt(agent: dict, caller: dict | None, contacts: list[dict], chat: 
     ctx = [f"You are the {agent['name']} agent." + (f" Your job: {purpose}." if purpose else ""),
            f"Today's date: {date.today().isoformat()}."]
     if set(agent["tools"]) & {"list_dir", "read_file", "write_file", "edit_file", "run_shell",
-                              "browser_screenshot"}:
+                              "browser_screenshot"} or mcp.agent_servers(agent):
         ctx.append(f"Your workspace folder is {tools.workspace_for(agent)}. File paths are relative to it.")
+    if note := mcp.prompt_note(agent):
+        ctx.append(note)
     team = [a for a in store.list_agents() if a["id"] != agent["id"]]
     if team:
         ctx.append("Your team (the other agents):\n" +
@@ -338,6 +340,7 @@ def agent_tools(agent: dict, contacts: list[dict]) -> list[dict]:
     schemas += [mail.SCHEMAS[t] for t in agent["tools"] if t in mail.SCHEMAS]
     schemas += [agenda.SCHEMAS[t] for t in agent["tools"] if t in agenda.SCHEMAS]
     schemas += [browser.SCHEMAS[t] for t in agent["tools"] if t in browser.SCHEMAS]
+    schemas += mcp.schemas(agent)
     if agent["memory"]:
         schemas += list(memory.SCHEMAS.values())
     if contacts:
@@ -353,6 +356,7 @@ async def agent_loop(run: Run, agent: dict, chat: dict, *, depth: int, path: lis
     settings = store.get_settings()
     messages = chat["messages"]
     contacts = contactable(agent, chain)
+    await mcp.prepare(agent, lambda text: run.emit("notice", path=path, text=text))
     schemas = agent_tools(agent, contacts)
     system = lambda: {"role": "system", "content": system_prompt(agent, caller, contacts, chat)}
     user_label = f"REQUEST FROM {caller['name'].upper()}" if caller else "USER"
@@ -601,6 +605,12 @@ async def execute_tool(run: Run, agent: dict, tc: dict, *, depth: int, path: lis
         if name != "recall_memory" and not result.startswith("Error"):
             broadcast({"type": "memory_changed", "by": agent["name"], "summary": result})
         return result, None
+    async def progress(text: str) -> None:
+        run.emit("tool_progress", path=path, call_id=tc["id"], content=text)
+
+    if mcp.is_mcp(agent, name):
+        return await mcp.call(agent, name, args, tools.workspace_for(agent), progress=progress,
+                              approve=lambda label, a: run.ask_approval(path, tc["id"], label, a)), None
     if name not in agent["tools"]:
         return f"Error: tool '{name}' is not available to you.", None
 
@@ -624,9 +634,6 @@ async def execute_tool(run: Run, agent: dict, tc: dict, *, depth: int, path: lis
 
     if name in browser.SCHEMAS:
         return await browser.call(name, args, tools.workspace_for(agent)), None
-
-    async def progress(text: str) -> None:
-        run.emit("tool_progress", path=path, call_id=tc["id"], content=text)
 
     try:
         timeout = store.get_settings().get("shell_timeout", tools.SHELL_TIMEOUT)
