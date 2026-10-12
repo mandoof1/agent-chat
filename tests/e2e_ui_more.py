@@ -36,6 +36,7 @@ from playwright.async_api import async_playwright, expect
 
 B = os.environ.get("AC_URL", "http://127.0.0.1:8767")
 MOCK = os.environ.get("MOCK_URL", "http://127.0.0.1:8766/v1")
+MOCK_SMALL = os.environ.get("MOCK_NCTX_URL", "http://127.0.0.1:8768/v1")  # a 3,000-token window
 BRAVE = os.environ.get("BROWSER_EXECUTABLE", "/usr/bin/brave")
 SHOTS = os.environ.get("UI_SHOTS")
 ONLY = set(filter(None, os.environ.get("ONLY", "").split(",")))
@@ -1039,7 +1040,8 @@ async def footer(page):
     j = await api("POST", "/api/chats", {"agent_id": AGENT_ID})
     await api("PATCH", f"/api/chats/{j['id']}", {"title": f"Footer J {U}"})
     await api_reply(j["id"], "big reply for joining")
-    await api("PUT", "/api/settings", {"compact_at": 1})  # the next step's prompt is over 1% of the window: it compacts first
+    # in a 3,000-token window the big reply is worth summarizing: the next step compacts first
+    await api("PUT", "/api/settings", {"base_url": MOCK_SMALL, "compact_at": 30})
     try:
         await api("POST", f"/api/chats/{j['id']}/run", {"content": "slow reply please"})
         for _ in range(300):
@@ -1047,7 +1049,7 @@ async def footer(page):
                 break
             await asyncio.sleep(0.05)
     finally:
-        await api("PUT", "/api/settings", {"compact_at": 70})
+        await api("PUT", "/api/settings", {"base_url": MOCK, "compact_at": 70})
     assert len((await api("GET", f"/api/chats/{j['id']}"))["compactions"]) == 1
     async with page.expect_response(re.compile(rf".*/api/chats/{j['id']}$")):  # the replayed compact_end asks for the count
         await page.evaluate("id => location.hash = '#/chat/' + id", j["id"])

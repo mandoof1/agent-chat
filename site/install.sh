@@ -12,7 +12,7 @@
 # Run it again to update. Remove with `agent-chat uninstall` (keeps data unless --purge).
 #
 # Optional environment:
-#   AGENT_CHAT_VERSION=0.3.0   install this release instead of the latest
+#   AGENT_CHAT_VERSION=0.3.1   install this release instead of the latest
 #   AGENT_CHAT_HOME=DIR        install root, a folder of its own (default $XDG_DATA_HOME/agent-chat,
 #                              else ~/.local/share/agent-chat)
 #   AGENT_CHAT_BIN=DIR         where the launcher and the terminal client go (default ~/.local/bin)
@@ -37,7 +37,7 @@ set -euo pipefail
 # The site that serves this script. Change it here (one place) once the site has its final address.
 DEFAULT_SITE="https://agent-chat-i4sv.onrender.com"
 # Installed when the latest release can't be looked up (offline GitHub, rate limits).
-PINNED_VERSION="v0.3.0"
+PINNED_VERSION="v0.3.1"
 
 SITE="${AGENT_CHAT_SITE:-$DEFAULT_SITE}"
 SITE="${SITE%/}"
@@ -218,7 +218,7 @@ resolve_version() {
   local latest="${AGENT_CHAT_LATEST_URL:-$REPO/releases/latest}"
   if [ -n "$v" ]; then
     case "$v" in v*) ;; *) v="v$v" ;; esac
-    [[ "$v" =~ $re ]] || die "AGENT_CHAT_VERSION=$AGENT_CHAT_VERSION is not a version like 0.3.0"
+    [[ "$v" =~ $re ]] || die "AGENT_CHAT_VERSION=$AGENT_CHAT_VERSION is not a version like 0.3.1"
     TAG="$v"
     return
   fi

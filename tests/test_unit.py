@@ -1,5 +1,6 @@
 """Unit tests that need no server: run with `uv run python tests/test_unit.py` (or pytest)."""
 import asyncio
+import json
 import os
 import re
 import sys
@@ -67,6 +68,139 @@ def test_choose_cut_keeps_tool_results_with_their_call():
     assert cut is not None and msgs[cut]["role"] != "tool"
     assert history.choose_cut(msgs, 0, None) == 4  # manual: from the last user message
     assert history.choose_cut(msgs[:2], 0, None) is None
+
+
+def test_continuation_hands_back_only_what_fits():
+    m = {"role": "assistant", "content": "a" * 50 + "END", "reasoning_content": "r" * 500 + "TAIL", "_carry": 40}
+    note = history.continuation(m)["content"]
+    assert "The end of your reasoning" in note and "r" * 36 + "TAIL" in note and "r" * 37 + "TAIL" not in note and "END" in note
+    assert history.carry({"stats": {"chars_per_token": 3.0}}, 8192) == int(8192 * history.CONTINUE_FRACTION * 3.0)
+    assert history.carry({}, 1_000_000) == history.CONTINUE_TAIL
+
+
+class FakeRun:
+    llama = True
+
+    def __init__(self):
+        self.events = []
+
+    def emit(self, type_, **data):
+        self.events.append(type_)
+
+
+def compact_with(chat, reason, n_ctx, fixed_chars=0, summary="- the gist"):
+    """Run history.compact with a fake summarizer. Returns (compacted?, summarizer calls)."""
+    calls = []
+
+    async def fake_stream(client, settings, *, out, **kw):
+        calls.append(kw["messages"][-1]["content"])
+        out.content = summary
+        return out
+    real, history.llm.stream_chat = history.llm.stream_chat, fake_stream
+    try:
+        done = asyncio.run(history.compact(FakeRun(), {"model": "", "temperature": None}, chat, path=[], n_ctx=n_ctx,
+                                           reason=reason, client=None, settings={"compact_at": 70}, fixed_chars=fixed_chars))
+    finally:
+        history.llm.stream_chat = real
+    return done, calls
+
+
+def tool_steps(n, result_chars):
+    out = []
+    for i in range(n):
+        out += [{"role": "assistant", "content": "", "tool_calls": [{"id": f"c{i}", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": f"c{i}", "content": "x" * result_chars}]
+    return out
+
+
+def test_compaction_that_frees_nothing_is_not_done():
+    # Older cut-off replies aren't sent (only the newest is), so summarizing them frees nothing: it
+    # used to add a summary on top (the context grew) and repeat at every cut-off.
+    chat = {"messages": [{"role": "user", "content": "think hard"}] +
+            [{"role": "assistant", "content": "", "reasoning_content": "r" * 30000, "_truncated": True} for _ in range(3)],
+            "stats": {"chars_per_token": 3.6}}
+    assert compact_with(chat, "cutoff", 16384) == (False, [])
+    assert compact_with(chat, "auto", 16384) == (False, []) and "compactions" not in chat
+
+
+def test_auto_compaction_leaves_room_to_grow():
+    # A big pasted request and a big system prompt can't be summarized away: the verbatim tail has to
+    # shrink instead, or the chat lands just under the trigger and compacts again a step later.
+    n_ctx, cpt = 32768, 3.6
+    chat = {"messages": [{"role": "user", "content": "p" * int(12000 * cpt)}] + tool_steps(12, 3000),
+            "stats": {"chars_per_token": cpt}}
+    done, calls = compact_with(chat, "auto", n_ctx, fixed_chars=int(2000 * cpt))
+    entry = chat["compactions"][-1]
+    assert done and len(calls) == 1 and "at most about" in calls[0]
+    assert entry["request"] == chat["messages"][0]["content"]  # still verbatim
+    assert entry["after_tokens"] < n_ctx * (0.7 - history.MIN_GAIN), entry
+    assert entry["before_tokens"] - entry["after_tokens"] > n_ctx * history.MIN_GAIN
+    # right after it, there is nothing worth compacting again
+    chat["messages"] += tool_steps(1, 3000)
+    assert compact_with(chat, "auto", n_ctx, fixed_chars=int(2000 * cpt)) == (False, [])
+
+
+def test_summary_longer_than_what_it_replaces_is_dropped():
+    chat = {"messages": [{"role": "user", "content": "go"}] + tool_steps(25, 3000), "stats": {"chars_per_token": 3.6}}
+    done, calls = compact_with(chat, "auto", 32768, summary="s" * 200000)
+    assert len(calls) == 1 and not done and "compactions" not in chat
+
+
+def test_agent_loop_does_not_compact_over_and_over():
+    """The whole loop against a fake llama-server (counts the rendered prompt, rejects one over the
+    window, cuts replies off where the window ends). Both cases used to compact at nearly every step."""
+    from app import llm, runner
+    cpt = 3.6
+
+    def loop(n_ctx, request_tokens, steps, think_tokens):
+        calls, comps = [], []
+
+        async def server(client, settings, *, messages, tools, out, **kw):
+            prompt = int(sum(len(str(m.get("content") or "")) + len(str(m.get("reasoning_content") or "")) +
+                             len(json.dumps(m.get("tool_calls") or "")) for m in messages) / cpt + len(json.dumps(tools or [])) / cpt)
+            if prompt > n_ctx:
+                raise llm.LLMError("the request exceeds the available context size")
+            if messages[0]["content"].startswith("You compress"):
+                out.content = "- the gist " * 100
+            else:
+                calls.append(prompt)
+                out.reasoning = "hmm " * int(min(think_tokens, n_ctx - prompt) * cpt / 4)
+                out.finish_reason = "length" if think_tokens + 50 > n_ctx - prompt else "stop"
+                if out.finish_reason == "stop" and len(calls) <= steps:
+                    out.calls[0] = {"id": f"c{len(calls)}", "name": "read_file", "args": "{}"}
+                elif out.finish_reason == "stop":
+                    out.content = "done"
+            out.usage = {"prompt_tokens": prompt, "completion_tokens": 50}
+            return out
+
+        async def read_file(run, agent, tc, **kw):
+            return "line of file content\n" * 140, None  # ~800 tokens per step
+        store.seed_defaults()
+        agent, chat = store.get_agent("coder"), store.create_chat("coder")
+        run = runner.Run(chat)
+        run.n_ctx = n_ctx
+        emit = run.emit
+        run.emit = lambda t, **d: (comps.append(d["compaction"]) if t == "compact_end" else None, emit(t, **d))
+        runner.add_user_message(chat, agent, "p" * int(request_tokens * cpt))
+        real = llm.stream_chat, runner.execute_tool
+        llm.stream_chat, runner.execute_tool = server, read_file
+        try:
+            answer = asyncio.run(runner.agent_loop(run, agent, chat, depth=0, path=[], chain=[agent["id"]]))
+        except llm.LLMError as e:
+            answer = str(e)
+        finally:
+            llm.stream_chat, runner.execute_tool = real
+            runner.views.pop(chat["id"], None)
+        return answer, calls, comps
+
+    # a model that thinks past the window: no compaction can help, so none is done, and it stops
+    answer, calls, comps = loop(16384, 300, steps=3, think_tokens=20000)
+    assert comps == [] and len(calls) == runner.MAX_CUTOFFS and "4 times in a row" in answer, (answer, calls, comps)
+    assert max(calls) < 16384 * 0.4, calls  # the continuation note leaves the reply room
+    # a big pasted request: each compaction frees real space, so there are few of them
+    answer, calls, comps = loop(32768, 12000, steps=25, think_tokens=0)
+    assert answer == "done" and 1 <= len(comps) <= 2, [(c["before_tokens"], c["after_tokens"]) for c in comps]
+    assert all(c["before_tokens"] - c["after_tokens"] > 32768 * history.MIN_GAIN for c in comps)
 
 
 def test_overflow_detection():

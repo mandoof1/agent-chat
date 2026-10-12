@@ -227,7 +227,8 @@ async def completions(request: Request):
                 done = [int(k) for k in re.findall(r"Round (\d+):", user)]
                 k = max(done, default=0) + 1
                 if k <= int(n):
-                    reasoning = f"Round {k}: " + "pondering the design. " * 300
+                    # the marker goes last: a continuation hands back the end of the thinking
+                    reasoning = "pondering the design. " * 300 + f"Round {k}: not done yet."
                     text = f"partial answer {k}."
                     tool = ("list_dir", {}) if "list_dir" in tools else None  # cut off mid-call: must not run
                     finish = "length"
