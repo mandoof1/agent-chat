@@ -5,6 +5,7 @@ import itertools
 import os
 import re
 import signal
+import sys
 import time
 from html.parser import HTMLParser
 from pathlib import Path
@@ -225,6 +226,19 @@ def edit_file(ws: Path, path: str, old_text: str, new_text: str) -> str:
     return f"Edited {target.relative_to(ws)}"
 
 
+def shell_env() -> dict:
+    """The environment the agent's commands run in: the user's, without Agent Chat's own
+    virtualenv, which `uv run` puts first on PATH. Otherwise `python` and `pip` in a command
+    would be the app's, missing the user's packages, and an install would change the app."""
+    env = dict(os.environ)
+    env.pop("VIRTUAL_ENV", None)
+    if sys.prefix != sys.base_prefix:  # running in a virtualenv: take its bin folder off PATH
+        venv_bin = os.path.normcase(os.path.realpath(os.path.join(sys.prefix, "bin")))
+        env["PATH"] = os.pathsep.join(d for d in env.get("PATH", "").split(os.pathsep)
+                                      if d and os.path.normcase(os.path.realpath(d)) != venv_bin)
+    return env
+
+
 async def run_shell(ws: Path, command: str, timeout: float | None = SHELL_TIMEOUT,
                     background: bool = False, on_progress=None) -> str:
     """Run `command`. `on_progress(text)` (async) is called every PROGRESS_EVERY seconds with the
@@ -238,7 +252,7 @@ async def run_shell(ws: Path, command: str, timeout: float | None = SHELL_TIMEOU
         with open(log, "wb") as fout:
             proc = await asyncio.create_subprocess_shell(
                 command, cwd=ws, stdin=asyncio.subprocess.DEVNULL, stdout=fout,
-                stderr=asyncio.subprocess.STDOUT, start_new_session=True,
+                stderr=asyncio.subprocess.STDOUT, start_new_session=True, env=shell_env(),
             )
         rel = log.relative_to(ws)
         return (f"Started in the background (pid {proc.pid}). It keeps running after this call. "
@@ -249,7 +263,7 @@ async def run_shell(ws: Path, command: str, timeout: float | None = SHELL_TIMEOU
         with open(out_file, "wb") as fout:
             proc = await asyncio.create_subprocess_shell(
                 command, cwd=ws, stdin=asyncio.subprocess.DEVNULL, stdout=fout,
-                stderr=asyncio.subprocess.STDOUT, start_new_session=True,
+                stderr=asyncio.subprocess.STDOUT, start_new_session=True, env=shell_env(),
             )
         try:
             waiter = asyncio.ensure_future(proc.wait())

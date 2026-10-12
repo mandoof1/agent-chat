@@ -242,6 +242,14 @@ def test_agent_loop_does_not_compact_over_and_over():
     assert 1 <= len(cleared) <= 6, cleared
 
 
+def test_shell_commands_run_outside_the_apps_virtualenv():
+    # `uv run` puts the app's .venv first on PATH: an agent's `python` / `pip` must be the user's
+    out = asyncio.run(tools.run_shell(tools.workspace_for({"workspace": tempfile.mkdtemp(prefix="ac-shell-")}), 'echo "venv=[$VIRTUAL_ENV]"; command -v python3 || true'))
+    assert "venv=[]" in out, out
+    if sys.prefix != sys.base_prefix:  # these tests run in one
+        assert os.path.realpath(sys.prefix) not in out, out
+
+
 def test_overflow_detection():
     assert history.is_overflow(Exception("the request exceeds the available context size"))
     assert not history.is_overflow(Exception("connection refused"))
