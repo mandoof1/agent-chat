@@ -406,12 +406,18 @@ Settings), the same model writes a summary of the older messages:
 
 - The model sees the summary plus the recent messages word for word.
 - Your chat still shows everything, with an expandable "Earlier messages summarized" marker.
+- Compaction aims for half the trigger point, so a chat has room to grow before the next one.
+  The system prompt, the tools, the request being worked on and the summary itself can't be
+  summarized away, so the word-for-word part shrinks to make room for them. The summary is
+  asked to stay short (about 6% of the window). A compaction that would free less than 10% of
+  the window is skipped rather than repeated at every step.
 - If the server still rejects a prompt as too long, the app compacts and retries once.
 - If a reply fills the context window before it finishes (a very long think, say), the agent
   keeps going instead of stopping. The next request leaves the cut-off reply out and passes the
-  end of its thinking (last 24,000 characters) plus any answer it had started, with "Continue
-  from where you stopped." If the prompt itself took more than half the window, the app compacts
-  first. This also works in delegated sub-chats, so a teammate never hands back an empty answer.
+  end of its thinking (the last 10% of the window, at most 24,000 characters) plus any answer
+  it had started, with "Continue from where you stopped." If the prompt itself took more than
+  half the window, the app compacts first. After four cut-offs in a row the turn stops with an
+  error. This also works in delegated sub-chats, so a teammate never hands back an empty answer.
 - Thinking is never cut short.
 
 ## Notes for llama.cpp

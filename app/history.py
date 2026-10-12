@@ -14,10 +14,15 @@ import httpx
 from . import llm
 
 DEFAULT_CHARS_PER_TOKEN = 3.0  # until a real reply calibrates it (code and JSON are dense)
-KEEP_FRACTION = 0.2            # recent context kept word for word after an automatic compaction
+KEEP_FRACTION = 0.2            # recent context kept word for word after an automatic compaction (at most)
+KEEP_MIN = 0.05                # ...and at least, even when what can't be summarized fills the room
+MIN_GAIN = 0.1                 # share of the context an automatic compaction must free to be worth a summary
+SUMMARY_FRACTION = 0.06        # length asked of a summary, as a share of the context
+SUMMARY_MAX = 4000             # tokens; a longer summary only crowds out the conversation
 TOOL_RESULT_CLIP = 1500        # chars of each tool result the summarizer sees
 SUMMARY_INPUT_FRACTION = 0.6   # max share of the context the summarizer's input may use
 CONTINUE_TAIL = 24000          # chars of a cut-off reply's thinking handed back so it can carry on
+CONTINUE_FRACTION = 0.1        # ...but no more than this share of the context (each, thinking and answer)
 QUEUED_NOTE = ("[The user sent this while you were working. Take it into account, then carry on with "
                "your task unless it says otherwise.]")
 
@@ -98,14 +103,16 @@ def to_llm(messages: list[dict], memory: bool = True, images: bool = False) -> l
 
 def continuation(m: dict) -> dict:
     """What the model sees in place of a reply the context window cut off: the end of its thinking
-    and any answer it had started, so the next request has room to pick up where it stopped."""
+    and any answer it had started, so the next request has room to pick up where it stopped.
+    `_carry` (set when the reply was cut off) is how many chars of each to hand back."""
+    tail = m.get("_carry") or CONTINUE_TAIL
     reasoning = m.get("reasoning_content") or ""
     parts = ["[Your previous reply was cut off because the context window filled up.]"]
     if reasoning:
-        label = "The end of your reasoning so far" if len(reasoning) > CONTINUE_TAIL else "Your reasoning so far"
-        parts.append(f"{label}:\n{reasoning[-CONTINUE_TAIL:]}")
+        label = "The end of your reasoning so far" if len(reasoning) > tail else "Your reasoning so far"
+        parts.append(f"{label}:\n{reasoning[-tail:]}")
     if m.get("content"):
-        parts.append(f"Your answer so far:\n{m['content'][-CONTINUE_TAIL:]}")
+        parts.append(f"Your answer so far:\n{m['content'][-tail:]}")
     parts.append("Continue from where you stopped.")
     return {"role": "user", "content": "\n\n".join(parts)}
 
@@ -115,9 +122,10 @@ def latest(chat: dict) -> dict | None:
     return comps[-1] if comps else None
 
 
-def payload(chat: dict, memory: bool = True, images: bool = False) -> list[dict]:
-    """The conversation as the model sees it: latest summary (if any), then the verbatim tail."""
-    c = latest(chat)
+def payload(chat: dict, memory: bool = True, images: bool = False, comp: dict | None = None) -> list[dict]:
+    """The conversation as the model sees it: latest summary (if any), then the verbatim tail.
+    `comp`: a compaction to use instead of the latest one (to measure what it would leave)."""
+    c = comp or latest(chat)
     if not c:
         return to_llm(chat["messages"], memory, images)
     head = "[Earlier conversation, summarized to save context]\n\n" + c["summary"]
@@ -198,23 +206,62 @@ def transcript(msgs: list[dict], user_label: str) -> str:
     return "\n\n".join(out)
 
 
+def summary_budget(n_ctx: int) -> int:
+    """Tokens a summary may take: it is sent with every request after it, and folded into the next one."""
+    return int(min(SUMMARY_MAX, max(300, n_ctx * SUMMARY_FRACTION)))
+
+
+def carry(chat: dict, n_ctx: int | None) -> int:
+    """Chars of a cut-off reply to hand back (see `continuation`): enough to carry on, while leaving
+    the window room for the rest of the reply."""
+    return int(min(CONTINUE_TAIL, n_ctx * CONTINUE_FRACTION * chars_per_token(chat))) if n_ctx else CONTINUE_TAIL
+
+
+def request_for(msgs: list[dict], cut: int) -> str | None:
+    """The request being worked on, if compacting up to `cut` would summarize it away: the newest
+    message that started a turn, plus what the user queued while the agent worked on it."""
+    last_user = next((i for i in range(len(msgs) - 1, -1, -1)
+                      if msgs[i].get("role") == "user" and not msgs[i].get("_queued")), None)
+    if last_user is None or last_user >= cut:
+        return None
+    return "\n\n".join([msgs[last_user]["content"]] + [
+        f"{QUEUED_NOTE}\n{m['content']}" for m in msgs[last_user + 1:cut] if m.get("role") == "user"])
+
+
 async def compact(run, agent: dict, chat: dict, *, path: list, n_ctx: int, reason: str,
-                  client: httpx.AsyncClient, settings: dict, user_label: str = "USER", instructions: str = "") -> bool:
-    """Summarize older messages of `chat`. Returns False when there is nothing worth compacting.
-    `instructions` (from /compact) say what the summary must keep."""
+                  client: httpx.AsyncClient, settings: dict, user_label: str = "USER", instructions: str = "",
+                  fixed_chars: int = 0) -> bool:
+    """Summarize older messages of `chat`. Returns False when there is nothing worth compacting:
+    unless the user asked for it, a compaction must free real space, or it would only be repeated at
+    the next step. `fixed_chars` is the part of every request compaction can't shrink (system prompt
+    and tool schemas). `instructions` (from /compact) say what the summary must keep."""
     msgs = chat["messages"]
     prev = latest(chat)
     start = prev["upto"] if prev else 0
     cpt = chars_per_token(chat)
-    current = size(payload(chat), None)
-    # keep at most ~40% of the trigger point verbatim, so compaction always frees real space
-    keep_fraction = min(KEEP_FRACTION, int(settings.get("compact_at") or 70) / 100 * 0.4)
-    keep = None if reason == "manual" else n_ctx * keep_fraction * cpt
+    current = size(payload(chat), None) + fixed_chars
+    summary_tokens = summary_budget(n_ctx)
+    keep = None
+    if reason != "manual":
+        # Aim for half the trigger point, so the chat has room to grow before the next compaction.
+        # What stays whatever is cut (system prompt, tools, the request, the new summary) comes off
+        # the verbatim tail's share; with the tail at its minimum, MIN_GAIN decides.
+        trigger = int(settings.get("compact_at") or 70) / 100
+        unsummarizable = fixed_chars + len(request_for(msgs, len(msgs)) or "") + summary_tokens * cpt
+        room = n_ctx * trigger / 2 * cpt - unsummarizable
+        keep = min(n_ctx * min(KEEP_FRACTION, trigger * 0.4) * cpt, max(n_ctx * KEEP_MIN * cpt, room))
     if reason == "overflow":  # the server says it doesn't fit, whatever our estimate thinks: cut harder
         keep = min(keep, current * 0.25)
     cut = choose_cut(msgs, start, keep)
     if cut is None:
         return False
+    request = request_for(msgs, cut)
+    if reason != "manual":
+        # what goes (older messages, the previous summary) minus what comes (request, new summary)
+        left = size(payload(chat, comp={"upto": cut, "summary": "", "request": request}), None) + fixed_chars
+        freed = estimate(chat, current - left) - summary_tokens
+        if freed < (0 if reason == "overflow" else n_ctx * MIN_GAIN):
+            return False
 
     before = estimate(chat, current)
     run.emit("compact_start", path=path, reason=reason, before_tokens=before)
@@ -226,17 +273,17 @@ async def compact(run, agent: dict, chat: dict, *, path: list, n_ctx: int, reaso
         run.emit("delta", path=path, kind="compact", text=text)
 
     for attempt in range(3):  # if even the summary request is too long, drop the older half and retry
-        request = ""
+        prompt = ""
         if prev:
-            request += f"Summary of the conversation before this transcript:\n\n{prev['summary']}\n\n"
-        request += f"Transcript to summarize:\n\n{body}\n\n"
+            prompt += f"Summary of the conversation before this transcript:\n\n{prev['summary']}\n\n"
+        prompt += f"Transcript to summarize:\n\n{body}\n\n"
         if instructions:
-            request += f"When summarizing, make sure to keep: {instructions}\n\n"
-        request += "Write the updated summary now."
+            prompt += f"When summarizing, make sure to keep: {instructions}\n\n"
+        prompt += f"Write the updated summary now, in at most about {summary_tokens * 3 // 4} words."
         comp = llm.Completion()
         try:
             await llm.stream_chat(client, settings, model=agent["model"], temperature=agent["temperature"], tools=None,
-                                  messages=[{"role": "system", "content": SUMMARY_PROMPT}, {"role": "user", "content": request}],
+                                  messages=[{"role": "system", "content": SUMMARY_PROMPT}, {"role": "user", "content": prompt}],
                                   out=comp, on_delta=on_delta, llama=run.llama)
             break
         except llm.LLMError as e:
@@ -248,20 +295,15 @@ async def compact(run, agent: dict, chat: dict, *, path: list, n_ctx: int, reaso
         run.emit("notice", path=path, text="Compaction failed: the model returned an empty summary.")
         return False
 
-    # the request being worked on: the newest message that started a turn, plus what the user
-    # queued while the agent worked on it
-    last_user = next((i for i in range(len(msgs) - 1, -1, -1)
-                      if msgs[i].get("role") == "user" and not msgs[i].get("_queued")), None)
-    request = None
-    if last_user is not None and last_user < cut:
-        request = "\n\n".join([msgs[last_user]["content"]] + [
-            f"{QUEUED_NOTE}\n{m['content']}" for m in msgs[last_user + 1:cut] if m.get("role") == "user"])
     entry = {"upto": cut, "summary": summary, "at": time.time(), "reason": reason, "request": request,
              "before_tokens": before}
     if instructions:
         entry["instructions"] = instructions
+    entry["after_tokens"] = estimate(chat, size(payload(chat, comp=entry), None) + fixed_chars)
+    if reason != "manual" and entry["after_tokens"] >= before:  # a summary far over its budget
+        run.emit("notice", path=path, text="Compaction freed no space (the summary came out too long), so it was not kept.")
+        return False
     chat.setdefault("compactions", []).append(entry)
-    entry["after_tokens"] = estimate(chat, size(payload(chat), None))
     run.emit("compact_end", path=path, compaction=entry)
     return True
 

@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Fixed: compaction that repeated itself
+- **A chat no longer compacts over and over.** Compaction never checked that it freed anything.
+  When the older messages it summarized weren't even sent (earlier cut-off replies, of which only
+  the newest goes to the model), it added a summary on top: the context grew ("7.0k → 7.9k
+  tokens") and the same thing happened at every cut-off. Now a compaction that would free less
+  than 10% of the window is skipped, and one whose summary comes out longer than what it
+  replaced is dropped.
+- **Compaction leaves room to work.** The word-for-word tail was always 20% of the window,
+  whatever else the prompt held, so with a big pasted request, a small window or a long system
+  prompt a chat landed just under the trigger and compacted again a step or two later, freeing a
+  little each time. The tail now shrinks to make room for what can't be summarized (system
+  prompt, tools, the request, the summary), aiming for half the trigger point. Summaries are
+  asked to stay short (about 6% of the window).
+- The "N → M tokens" on a compaction marker now counts the system prompt and tools, like the
+  context meter.
+- A cut-off reply hands back at most 10% of the window (still at most 24,000 characters) of its
+  thinking, instead of 24,000 characters whatever the window, which nearly filled an 8k–16k one.
+- After four cut-offs in a row the turn stops with an error, instead of running until the step
+  limit.
+
 ## 0.3.0 — 2026-10-10
 
 Install it with one command, run it like Claude Code, and a terminal client that survives

@@ -23,6 +23,7 @@ from playwright.async_api import async_playwright, expect
 
 B = os.environ.get("AC_URL", "http://127.0.0.1:8767")
 MOCK = os.environ.get("MOCK_URL", "http://127.0.0.1:8766/v1")
+MOCK_SMALL = os.environ.get("MOCK_NCTX_URL", "http://127.0.0.1:8768/v1")  # a 3,000-token window
 BRAVE = os.environ.get("BROWSER_EXECUTABLE", "/usr/bin/brave")
 SHOTS = os.environ.get("UI_SHOTS")  # a folder: save screenshots there too
 
@@ -510,7 +511,8 @@ async def footer_counts_compactions_mid_run(page):
     await expect(page.locator("#hdr-title")).to_have_text("New chat")
     await send(page, "big reply")
     await expect(foot).to_have_text(re.compile(rf"^not compacted yet · {GOING}$"))
-    await api("PUT", "/api/settings", {"compact_at": 1})  # the next step's prompt is over 1% of the window: it compacts first
+    # in a 3,000-token window the big reply is worth summarizing: the next step compacts first
+    await api("PUT", "/api/settings", {"base_url": MOCK_SMALL, "compact_at": 30})
     try:
         await page.fill("#input", "slow reply please")
         await page.keyboard.press("Enter")
@@ -521,7 +523,7 @@ async def footer_counts_compactions_mid_run(page):
         await page.click("#stop-btn")
         await expect(page.locator("#stop-btn")).to_be_hidden(timeout=10000)
     finally:
-        await api("PUT", "/api/settings", {"compact_at": 70})
+        await api("PUT", "/api/settings", {"base_url": MOCK, "compact_at": 70})
     assert len((await chat_now(page))["compactions"]) == 1
     await expect(foot).to_have_text(re.compile(rf"^compacted 1× · {GOING}$"))
     await api("POST", f"/api/chats/{chat['id']}/run", {"from_index": 1})  # regenerating the first reply drops the summary of it

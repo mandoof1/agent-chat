@@ -36,6 +36,7 @@ from . import agenda, browser, history, llm, mail, memory, store, tools
 from .history import repair
 
 MAX_DEPTH = 3
+MAX_CUTOFFS = 4             # replies in a row the context window may cut off before the turn gives up
 MAX_IMAGES = 4              # images attached to one message that are sent to the model
 MAX_IMAGE_BYTES = 6_000_000
 TITLE_PROMPT = ("You name conversations. Given the first exchange of a chat, reply with a title of at most six "
@@ -351,7 +352,8 @@ async def agent_loop(run: Run, agent: dict, chat: dict, *, depth: int, path: lis
             return False
         try:
             done = await history.compact(run, agent, chat, path=path, n_ctx=n_ctx, reason=reason,
-                                         client=client, settings=settings, user_label=user_label)
+                                         client=client, settings=settings, user_label=user_label,
+                                         fixed_chars=history.size([system()], schemas))
         except llm.LLMError as e:
             run.emit("notice", path=path, text=f"Compaction failed: {e}")
             return False
@@ -368,7 +370,7 @@ async def agent_loop(run: Run, agent: dict, chat: dict, *, depth: int, path: lis
         return tokens
 
     max_steps = max(0, int(settings.get("max_steps", 30) or 0))  # 0 = no limit
-    step = 0
+    step = cutoffs = 0
     partial: list[str] = []  # answer text from replies that were cut off, joined into the final answer
     while not max_steps or step < max_steps:
         step += 1
@@ -400,6 +402,7 @@ async def agent_loop(run: Run, agent: dict, chat: dict, *, depth: int, path: lis
         if cut_off:
             msg["_truncated"] = True
             msg.pop("tool_calls", None)  # a call cut off mid-way has incomplete arguments
+            msg["_carry"] = history.carry(chat, await run.context_size())
         messages.append(msg)
         if stats.get("prompt_tokens"):
             chat.setdefault("stats", {}).update(
@@ -408,6 +411,10 @@ async def agent_loop(run: Run, agent: dict, chat: dict, *, depth: int, path: lis
         save()
         run.emit("assistant_end", path=path, message=msg)
 
+        cutoffs = cutoffs + 1 if cut_off else 0
+        if cutoffs >= MAX_CUTOFFS:
+            raise llm.LLMError(f"The reply filled the context window {cutoffs} times in a row without finishing. "
+                               "Ask for something smaller, start a new chat, or raise --ctx-size.")
         if cut_off:
             # The window filled up mid-reply. Keep going: the next request carries the end of this
             # reply's thinking instead of the whole thing (history.continuation).
@@ -686,10 +693,13 @@ async def _run_top(run: Run, agent: dict, mode: str, instructions: str = "") -> 
     try:
         if mode == "compact":
             n_ctx = await run.context_size() or 32768
-            if await history.compact(run, agent, chat, path=[], n_ctx=n_ctx, reason="manual",
-                                     client=client, settings=store.get_settings(), instructions=instructions):
-                contacts = contactable(agent, [agent["id"]])
-                show_context(run, chat, [], estimate_context(agent, chat, None, contacts, agent_tools(agent, contacts)))
+            contacts = contactable(agent, [agent["id"]])
+            schemas = agent_tools(agent, contacts)
+            sys_msg = {"role": "system", "content": system_prompt(agent, None, contacts, chat)}
+            if await history.compact(run, agent, chat, path=[], n_ctx=n_ctx, reason="manual", client=client,
+                                     settings=store.get_settings(), instructions=instructions,
+                                     fixed_chars=history.size([sys_msg], schemas)):
+                show_context(run, chat, [], estimate_context(agent, chat, None, contacts, schemas))
                 store.save_chat(chat)
             else:
                 run.emit("notice", path=[], text="Nothing to compact yet: the conversation is still short.")
