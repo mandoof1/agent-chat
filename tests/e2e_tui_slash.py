@@ -354,6 +354,16 @@ def cleared(t, what):
     until(t, lambda: box_text(t) == "", 5, f"the box emptied by {what}")
 
 
+def refused(t, typed):
+    """Arguments a command can't use: it says why and the text stays in the box to fix (as in the
+    web client); then the box is emptied for the next one."""
+    def kept_here():  # a long line scrolls sideways: the box shows a part of it
+        shown = [l.strip() for l in box_text(t).split("\n") if l.strip()]
+        return shown and all(l in typed for l in shown)
+    until(t, kept_here, 5, f"{typed[:20]!r} kept in the box")
+    clear(t)
+
+
 def esc_closes(t, marker):
     t.key("esc", 0.15)
     until(t, lambda: not find(t, marker), 5, f"{marker!r} closed by Esc")
@@ -879,7 +889,7 @@ def s_new(ops, uni):
             run(t, typed, 0.6)
             expect(t, who, 5)
             assert not new_since(before), new_since(before)
-            cleared(t, typed)
+            refused(t, typed)
         intact(t, "/new")
     finally:
         close(t)
@@ -1071,7 +1081,7 @@ def s_export(ops):
         for i, typed in enumerate(["/export pdf", "/export 日本語", "/export " + "x" * 300]):
             run(t, typed)
             toasted(t, "Export as md or json, like /export json", n + i)
-            cleared(t, typed[:20])
+            refused(t, typed)
         assert sorted(f for f in os.listdir(WORK) if f.startswith(f"Exp-{STAMP}")) == sorted([os.path.basename(md), os.path.basename(js)]), os.listdir(WORK)
         run(t, f"/rename Long{STAMP} " + "y" * 150, 0.6)
         until(t, lambda: chat(cid)["title"].startswith(f"Long{STAMP}"), 5, "the long title")
@@ -1132,7 +1142,7 @@ def s_toggles(ops):
         for i, typed in enumerate(["/theme neon", "/theme ダーク", "/theme " + "d" * 300]):
             run(t, typed)
             toasted(t, "Themes: dark, light, plain", n + i)
-            cleared(t, typed[:20])
+            refused(t, typed)
         assert dark in bgs(t) and state_json().get("theme") == "dark", "a wrong name left the palette alone"
         close(t)
         t = start(cid)
@@ -1174,7 +1184,7 @@ def s_memory(ops):
         for i, typed in enumerate(["/remember", "/remember      ", "/REMEMBER"]):
             run(t, typed)
             toasted(t, "Say what to remember, like /remember I prefer short answers", n + i)
-            cleared(t, typed)
+            refused(t, typed)
         # (every word stamped: a fact sharing most words with one already saved, by an earlier run say, is merged into it)
         long_fact = f"longfact{STAMP} " + " ".join(f"w{i}x{STAMP}" for i in range(55))  # (under 1000 with the command, or the whole is a paste token)
         for typed, fact in [(f"/remember slashfact{STAMP} likes{STAMP} terminals{STAMP}", f"slashfact{STAMP} likes{STAMP} terminals{STAMP}"),
@@ -1227,7 +1237,10 @@ def s_permissions(ops):
             n = toast_n(t, said)
             run(t, typed)
             toasted(t, said, n)
-            cleared(t, typed[:20])
+            if said.startswith("Use /permissions"):
+                refused(t, typed)
+            else:
+                cleared(t, typed[:20])
             if typed == "/permissions ask":
                 until(t, lambda: settings()["bypass_approvals"] is False, 5, "asking again")
                 expect(t, "⛨ asks before acting", 5)
