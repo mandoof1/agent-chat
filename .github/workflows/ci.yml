@@ -28,7 +28,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: logs-${{ github.job }}
-          path: /tmp/agent-chat-tests.*/
+          path: |
+            /tmp/agent-chat-tests.*/*.out
+            /tmp/agent-chat-tests.*/*.log
           if-no-files-found: ignore
 
   web-ui:
@@ -44,7 +46,8 @@ jobs:
         with:
           name: logs-${{ github.job }}
           path: |
-            /tmp/agent-chat-tests.*/
+            /tmp/agent-chat-tests.*/*.out
+            /tmp/agent-chat-tests.*/*.log
             /tmp/agent-chat-tests.shots/
           if-no-files-found: ignore
 
@@ -85,7 +88,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: logs-${{ github.job }}-${{ matrix.suite }}
-          path: /tmp/agent-chat-tests.*/
+          path: |
+            /tmp/agent-chat-tests.*/*.out
+            /tmp/agent-chat-tests.*/*.log
           if-no-files-found: ignore
 
   install:

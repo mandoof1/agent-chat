@@ -544,10 +544,11 @@ async def cleared_outputs_are_tagged(page):
             .observe(document.querySelector('#messages'), { subtree: true, childList: true }); }""")
     await send(page, "readloop 10")
     assert await page.evaluate("window.__liveCleared"), "the live turn's cards are tagged as the outputs are cleared"
-    cleared = [m for m in (await chat_now(page))["messages"] if m.get("_cleared")]
-    assert len(cleared) >= 2, len(cleared)
+    msgs = (await chat_now(page))["messages"]
+    cleared = sum(bool(m.get("_cleared")) for m in msgs) + sum(len(m.get("_cleared_args") or {}) for m in msgs)
+    assert cleared >= 2, cleared  # outputs, and the file written in full
     tags = page.locator("#history .tool-card .t-cleared")
-    await expect(tags).to_have_count(len(cleared))
+    await expect(tags).to_have_count(cleared)
     assert "still here" in (await tags.first.get_attribute("title"))
     await expect(page.locator("#history .tool-card")).to_have_count(11)  # the write and every read keep a card
     await shot(page, "ui-cleared")
