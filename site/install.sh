@@ -74,8 +74,8 @@ need() { command -v "$1" >/dev/null 2>&1 || die "this installer needs '$1'. Inst
 
 # A directory path without repeated or trailing slashes ("/" stays "/").
 normdir() {
-  local p="$1"
-  while :; do case "$p" in *//*) p="${p//\/\//\/}" ;; *) break ;; esac; done
+  local p
+  p=$(printf '%s' "$1" | tr -s /)  # (not ${p//\/\//\/}: bash 3.2, macOS's, keeps the backslash)
   [ "$p" = / ] || p="${p%/}"
   printf '%s' "$p"
 }

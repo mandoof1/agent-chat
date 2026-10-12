@@ -11,7 +11,7 @@ version=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' app/main.py)
 git archive --format=tar.gz --prefix=agent-chat/ -o "$T/src.tar.gz" HEAD
 
 export AGENT_CHAT_HOME="$T/home" AGENT_CHAT_BIN="$T/bin" AGENT_CHAT_PORT="$PORT"
-export XDG_STATE_HOME="$T/state" XDG_CONFIG_HOME="$T/config"  # the launcher's log and pid file: not yours
+export XDG_STATE_HOME="$T/state" XDG_CONFIG_HOME="$T/config" XDG_CACHE_HOME="$T/cache"  # the launcher's log, pid file and build cache: not yours
 export AGENT_CHAT_VERSION="$version" AGENT_CHAT_SRC_URL="file://$T/src.tar.gz"
 export AGENT_CHAT_NO_TUI="${AGENT_CHAT_NO_TUI:-1}"
 [ "$AGENT_CHAT_NO_TUI" = 1 ] || export AGENT_CHAT_BUILD_TUI=1  # this commit's client, not a release's
