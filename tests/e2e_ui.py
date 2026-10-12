@@ -74,6 +74,7 @@ async def desktop(page):
     print("== approval card: approve all for this run auto-approves the second command")
     await page.click(".agent-row[data-agent='coder']")
     await page.click("#new-chat-btn")
+    await expect(page.locator("#hdr-title")).to_have_text("New chat")  # opened: its (empty) draft is in the box
     await page.fill("#input", "shell twice: echo one")
     await page.keyboard.press("Enter")
     await expect(page.locator(".approval-box")).to_be_visible(timeout=10000)
