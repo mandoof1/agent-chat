@@ -4,6 +4,10 @@ When a conversation nears the model's context window, the older messages are rep
 what is sent to the model) by a summary that the same model writes. The chat file and the UI
 keep the full history; chat["compactions"] records each summary and the message index where the
 verbatim part resumes.
+
+Before that, old tool outputs are cleared: the model sees a short placeholder in their place
+(`_cleared` on the message; the chat keeps the output). It costs no model call, and a tool can
+always be run again, so it comes first and makes compaction rarer.
 """
 
 import json
@@ -23,6 +27,12 @@ TOOL_RESULT_CLIP = 1500        # chars of each tool result the summarizer sees
 SUMMARY_INPUT_FRACTION = 0.6   # max share of the context the summarizer's input may use
 CONTINUE_TAIL = 24000          # chars of a cut-off reply's thinking handed back so it can carry on
 CONTINUE_FRACTION = 0.1        # ...but no more than this share of the context (each, thinking and answer)
+CLEAR_AT = 0.7                 # old tool outputs are cleared past this share of the compaction trigger...
+CLEAR_TO = 0.4                 # ...down to this share of it, in one batch (each batch breaks the prompt cache once)
+KEEP_OUTPUTS = 3               # the newest tool outputs are never cleared, nor any of the current step's
+CLEAR_MIN_CHARS = 1000         # shorter outputs aren't worth a placeholder
+KEPT_TOOLS = {"ask_agent", "remember", "recall_memory", "forget_memory"}  # a teammate's report, memory: kept
+OUTPUT_FRACTION = 0.25         # most of the context one tool output may take
 QUEUED_NOTE = ("[The user sent this while you were working. Take it into account, then carry on with "
                "your task unless it says otherwise.]")
 
@@ -90,6 +100,8 @@ def to_llm(messages: list[dict], memory: bool = True, images: bool = False) -> l
         clean = {k: v for k, v in m.items() if not k.startswith("_")}
         if i < last_user:
             clean.pop("reasoning_content", None)
+        if m.get("_cleared") and m.get("role") == "tool":
+            clean["content"] = cleared_note(m)
         if m.get("_queued") and m.get("role") == "user":
             clean["content"] = f"{QUEUED_NOTE}\n{m['content']}"
         if memory and m.get("_recall") and m.get("role") == "user":
@@ -99,6 +111,12 @@ def to_llm(messages: list[dict], memory: bool = True, images: bool = False) -> l
                 {"type": "image_url", "image_url": {"url": f"attach://{path}"}} for path in m["_images"]]
         out.append(clean)
     return out
+
+
+def cleared_note(m: dict) -> str:
+    """What the model sees in place of a cleared tool output (fixed, so the prompt cache holds)."""
+    return (f"[Output cleared to save context: it was {len(m.get('content') or ''):,} characters. "
+            "Run the tool again if you need it.]")
 
 
 def continuation(m: dict) -> dict:
@@ -170,7 +188,8 @@ def choose_cut(msgs: list[dict], start: int, keep_chars: float | None) -> int | 
         return cut if cut and cut - start >= 2 else None
     acc, cut = 0, len(msgs)
     for i in range(len(msgs) - 1, start, -1):
-        acc += len(json.dumps(msgs[i], ensure_ascii=False))
+        m = msgs[i] | {"content": cleared_note(msgs[i])} if msgs[i].get("_cleared") else msgs[i]
+        acc += len(json.dumps(m, ensure_ascii=False))
         if acc > keep_chars:
             break
         cut = i
@@ -181,6 +200,47 @@ def choose_cut(msgs: list[dict], start: int, keep_chars: float | None) -> int | 
         while cut > start and msgs[cut].get("role") == "tool":
             cut -= 1
     return cut if cut - start >= 2 else None
+
+
+def fit_output(text: str, chat: dict, n_ctx: int | None) -> str:
+    """A tool output cut to OUTPUT_FRACTION of the context (start and end kept): one output must
+    not fill a small window. The tools have their own, fixed limits too."""
+    limit = int(n_ctx * OUTPUT_FRACTION * chars_per_token(chat)) if n_ctx else 0
+    if not limit or len(text) <= limit:
+        return text
+    half = limit // 2
+    return f"{text[:half]}\n\n... [{len(text) - limit:,} characters omitted to fit the context window] ...\n\n{text[-half:]}"
+
+
+def clear_outputs(chat: dict, *, n_ctx: int, trigger: float, fixed_chars: int = 0, everything: bool = False) -> list[str]:
+    """Clear the oldest tool outputs (see the module docstring) until the context is down to
+    CLEAR_TO of `trigger` (the compaction point, in tokens). Returns the ids of the calls whose
+    outputs were cleared: none when that would free less than MIN_GAIN of the window, which isn't
+    worth re-processing the prompt from the first cleared output on. `everything` (the server
+    rejected the prompt): clear all that may be cleared, whatever it frees."""
+    msgs = chat["messages"]
+    prev = latest(chat)
+    start = prev["upto"] if prev else 0
+    names = {tc["id"]: tc["function"]["name"] for m in msgs[start:] for tc in m.get("tool_calls") or []}
+    last_call = next((m for m in reversed(msgs) if m.get("tool_calls")), None)
+    keep = {tc["id"] for tc in (last_call or {}).get("tool_calls") or []}
+    keep |= {m["tool_call_id"] for m in [m for m in msgs[start:] if m.get("role") == "tool"][-KEEP_OUTPUTS:]}
+    candidates = [m for m in msgs[start:] if m.get("role") == "tool" and not m.get("_cleared")
+                  and m["tool_call_id"] not in keep and names.get(m["tool_call_id"]) not in KEPT_TOOLS
+                  and len(m.get("content") or "") >= CLEAR_MIN_CHARS]
+    current = size(payload(chat), None) + fixed_chars
+    target = 0 if everything else trigger * CLEAR_TO * chars_per_token(chat)
+    chosen, freed = [], 0
+    for m in candidates:  # oldest first: the prompt cache holds up to the first one cleared
+        if current - freed <= target:
+            break
+        freed += len(json.dumps(m["content"], ensure_ascii=False)) - len(json.dumps(cleared_note(m), ensure_ascii=False))
+        chosen.append(m)
+    if not chosen or estimate(chat, freed) < (0 if everything else n_ctx * MIN_GAIN):
+        return []
+    for m in chosen:
+        m["_cleared"] = {"at": time.time(), "upto": len(msgs)}
+    return [m["tool_call_id"] for m in chosen]
 
 
 def _clip(text: str, limit: int) -> str:
@@ -257,10 +317,13 @@ async def compact(run, agent: dict, chat: dict, *, path: list, n_ctx: int, reaso
         return False
     request = request_for(msgs, cut)
     if reason != "manual":
-        # what goes (older messages, the previous summary) minus what comes (request, new summary)
+        # what goes (older messages, the previous summary) minus what comes (request, new summary).
+        # On overflow the server's limit is what counts, not n_ctx (which the summary budget comes
+        # from and which may be wrong): anything removed may be enough, and the check after the
+        # summary still drops one that grew the context.
         left = size(payload(chat, comp={"upto": cut, "summary": "", "request": request}), None) + fixed_chars
-        freed = estimate(chat, current - left) - summary_tokens
-        if freed < (0 if reason == "overflow" else n_ctx * MIN_GAIN):
+        freed = estimate(chat, current - left)
+        if freed < (1 if reason == "overflow" else summary_tokens + n_ctx * MIN_GAIN):
             return False
 
     before = estimate(chat, current)
@@ -309,7 +372,11 @@ async def compact(run, agent: dict, chat: dict, *, path: list, n_ctx: int, reaso
 
 
 def prune(chat: dict, length: int) -> None:
-    """Drop compactions that cover messages beyond `length` (after an edit / regenerate)."""
+    """Drop compactions that cover messages beyond `length` (after an edit / regenerate), and
+    restore the tool outputs cleared after that point."""
     comps = chat.get("compactions") or []
     while comps and comps[-1]["upto"] > length:
         comps.pop()
+    for m in chat["messages"][:length]:
+        if (m.get("_cleared") or {}).get("upto", 0) > length:
+            del m["_cleared"]

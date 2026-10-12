@@ -532,6 +532,26 @@ async def footer_counts_compactions_mid_run(page):
     assert (await chat_now(page)).get("compactions") == []
 
 
+async def cleared_outputs_are_tagged(page):
+    """Old tool outputs cleared from what the model sees keep their card, tagged "cleared"."""
+    chat = await api("POST", "/api/chats", {"agent_id": "coder"})
+    await page.evaluate("id => location.hash = '#/chat/' + id", chat["id"])
+    await expect(page.locator("#hdr-title")).to_have_text("New chat")
+    await send(page, "write: " + "\n".join(f"line {i:04} " + "z" * 40 for i in range(400)))
+    await page.evaluate("""() => { window.__liveCleared = false;  // the run is quick: note a live tag whenever it shows
+        new MutationObserver(() => { if (document.querySelector('#live .tool-card .t-cleared')) window.__liveCleared = true; })
+            .observe(document.querySelector('#messages'), { subtree: true, childList: true }); }""")
+    await send(page, "readloop 10")
+    assert await page.evaluate("window.__liveCleared"), "the live turn's cards are tagged as the outputs are cleared"
+    cleared = [m for m in (await chat_now(page))["messages"] if m.get("_cleared")]
+    assert len(cleared) >= 2, len(cleared)
+    tags = page.locator("#history .tool-card .t-cleared")
+    await expect(tags).to_have_count(len(cleared))
+    assert "still here" in (await tags.first.get_attribute("title"))
+    await expect(page.locator("#history .tool-card")).to_have_count(11)  # the write and every read keep a card
+    await shot(page, "ui-cleared")
+
+
 async def paste(page, text):
     """Paste text into the message box with Ctrl+V; returns the ms from the key to the box's input event."""
     await page.evaluate("t => navigator.clipboard.writeText(t)", text)
@@ -604,6 +624,8 @@ async def main():
             await slash_commands(page)
             print("== the footer counts a compaction as it happens mid-run")
             await footer_counts_compactions_mid_run(page)
+            print("== cleared tool outputs keep their cards, tagged, live and after the run")
+            await cleared_outputs_are_tagged(page)
             print("== pasting very large text into the message box")
             await big_paste(page)
         except BaseException:

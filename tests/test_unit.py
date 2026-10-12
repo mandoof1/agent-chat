@@ -146,14 +146,51 @@ def test_summary_longer_than_what_it_replaces_is_dropped():
     assert len(calls) == 1 and not done and "compactions" not in chat
 
 
+def test_old_tool_outputs_are_cleared_oldest_first():
+    n_ctx, cpt = 32768, 3.6
+    steps = tool_steps(14, 4000)
+    steps[2]["tool_calls"][0]["function"]["name"] = "ask_agent"  # a teammate's report stays
+    steps[5]["content"] = "short"  # not worth a placeholder
+    chat = {"messages": [{"role": "user", "content": "go"}] + steps, "stats": {"chars_per_token": cpt}}
+    before = history.estimate(chat, history.size(history.payload(chat), None))
+    ids = history.clear_outputs(chat, n_ctx=n_ctx, trigger=n_ctx * 0.7)
+    after = history.estimate(chat, history.size(history.payload(chat), None))
+    assert ids and ids[0] == "c0" and "c1" not in ids and "c2" not in ids, ids  # c1: the report, c2: short
+    assert not {"c11", "c12", "c13"} & set(ids), "the newest outputs are kept"
+    assert before - after >= n_ctx * history.MIN_GAIN and after <= n_ctx * 0.7 * history.CLEAR_TO + 1200, (before, after)
+    sent = {m.get("tool_call_id"): m["content"] for m in history.to_llm(chat["messages"]) if m["role"] == "tool"}
+    assert sent["c0"].startswith("[Output cleared to save context: it was 4,000 characters.")
+    assert chat["messages"][2]["content"] == "x" * 4000, "the chat keeps the output"
+    assert history.clear_outputs(chat, n_ctx=n_ctx, trigger=n_ctx * 0.7) == [], "nothing more worth clearing"
+    # an edit back to before the clearing brings the outputs back (runner.truncate)
+    chat["messages"] = chat["messages"][:10]
+    history.prune(chat, 10)
+    assert not any(m.get("_cleared") for m in chat["messages"])
+
+
+def test_clearing_that_frees_little_is_skipped():
+    chat = {"messages": [{"role": "user", "content": "go"}] + tool_steps(5, 1500), "stats": {"chars_per_token": 3.6}}
+    assert history.clear_outputs(chat, n_ctx=32768, trigger=1000) == [] and not any(m.get("_cleared") for m in chat["messages"])
+    assert history.clear_outputs(chat, n_ctx=32768, trigger=1000, everything=True) == ["c0", "c1"]  # the server said it's full
+
+
+def test_one_tool_output_cannot_fill_a_small_window():
+    chat = {"stats": {"chars_per_token": 3.0}}
+    out = history.fit_output("a" * 5000 + "b" * 5000, chat, 8192)
+    assert len(out) < 6500 and out.startswith("a" * 100) and out.endswith("b" * 100) and "omitted to fit" in out
+    assert history.fit_output("short", chat, 8192) == "short" and history.fit_output("x" * 50000, chat, None) == "x" * 50000
+
+
 def test_agent_loop_does_not_compact_over_and_over():
     """The whole loop against a fake llama-server (counts the rendered prompt, rejects one over the
     window, cuts replies off where the window ends). Both cases used to compact at nearly every step."""
     from app import llm, runner
     cpt = 3.6
+    cleared = []
 
     def loop(n_ctx, request_tokens, steps, think_tokens):
         calls, comps = [], []
+        cleared.clear()
 
         async def server(client, settings, *, messages, tools, out, **kw):
             prompt = int(sum(len(str(m.get("content") or "")) + len(str(m.get("reasoning_content") or "")) +
@@ -180,7 +217,8 @@ def test_agent_loop_does_not_compact_over_and_over():
         run = runner.Run(chat)
         run.n_ctx = n_ctx
         emit = run.emit
-        run.emit = lambda t, **d: (comps.append(d["compaction"]) if t == "compact_end" else None, emit(t, **d))
+        run.emit = lambda t, **d: (comps.append(d["compaction"]) if t == "compact_end" else
+                                   cleared.append(d["call_ids"]) if t == "outputs_cleared" else None, emit(t, **d))
         runner.add_user_message(chat, agent, "p" * int(request_tokens * cpt))
         real = llm.stream_chat, runner.execute_tool
         llm.stream_chat, runner.execute_tool = server, read_file
@@ -197,10 +235,11 @@ def test_agent_loop_does_not_compact_over_and_over():
     answer, calls, comps = loop(16384, 300, steps=3, think_tokens=20000)
     assert comps == [] and len(calls) == runner.MAX_CUTOFFS and "4 times in a row" in answer, (answer, calls, comps)
     assert max(calls) < 16384 * 0.4, calls  # the continuation note leaves the reply room
-    # a big pasted request: each compaction frees real space, so there are few of them
+    # a big pasted request and many tool steps: clearing old outputs keeps it under the compaction
+    # point, and the few clears each free real space
     answer, calls, comps = loop(32768, 12000, steps=25, think_tokens=0)
-    assert answer == "done" and 1 <= len(comps) <= 2, [(c["before_tokens"], c["after_tokens"]) for c in comps]
-    assert all(c["before_tokens"] - c["after_tokens"] > 32768 * history.MIN_GAIN for c in comps)
+    assert answer == "done" and comps == [] and max(calls) < 32768 * 0.7, (calls, comps)
+    assert 1 <= len(cleared) <= 6, cleared
 
 
 def test_overflow_detection():

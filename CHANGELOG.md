@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.3.2 — 2026-10-12
+
+### Old tool outputs are cleared before anything is compacted
+- In an agent run most of the context is old tool output: files read, command output, pages.
+  Past 70% of the compaction point (49% of the window by default) the oldest outputs are
+  replaced, in what the model sees, by a one-line note ("Output cleared to save context: it was
+  18,400 characters. Run the tool again if you need it."). The chat keeps them: their cards are
+  tagged "cleared" in both clients, live and afterwards, and editing or regenerating an earlier
+  message brings them back.
+- It needs no model call, unlike a summary, and clears in batches (down to 40% of the
+  compaction point, and only when that frees 10% of the window), so llama-server re-processes the
+  prompt from the first cleared output once per batch instead of after every step. The newest
+  three outputs, the current step's, teammates' answers (`ask_agent`) and memory results stay.
+  When the server rejects a prompt as too long, outputs are cleared before anything is compacted.
+- On a fake llama-server with a prefix cache, three tool-heavy runs that used to compact two or
+  three times now never compact, and the server processes 11–50% fewer prompt tokens.
+- One tool output may take at most a quarter of the window (start and end kept), so a single
+  file or page can't fill an 8k context.
+
+### Fixed
+- 0.3.1 gave up on a prompt the server rejected as too long when the server's real limit was far
+  below the context size it reports: the check for whether compacting was worth it counted a
+  summary sized for the reported window. On overflow, compaction now runs whenever it removes
+  anything (as in 0.3.0); a summary that grows the context is still dropped.
+
 ## 0.3.1 — 2026-10-12
 
 ### Fixed: compaction that repeated itself

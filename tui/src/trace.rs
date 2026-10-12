@@ -82,6 +82,7 @@ pub struct ToolStep {
     pub live_out: Option<String>,
     pub approval: Option<String>,
     pub bypassed: Option<String>,
+    pub cleared: bool, // the model sees a short note in place of the output (it is still shown here)
     pub sub: Option<Sub>,
 }
 
@@ -285,7 +286,7 @@ fn append_assistant(steps: &mut Vec<Step>, m: &Value, results: &std::collections
         let name = tc.get("function").map(|f| s(f, "name")).unwrap_or_default();
         let raw = tc.get("function").map(|f| s(f, "arguments")).unwrap_or_default();
         let args = serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| serde_json::json!({ "_raw": raw }));
-        let mut tool = ToolStep { call_id: id.clone(), name: name.clone(), args: args.clone(), raw_args: String::new(), state: ToolState::Running, result: None, live_out: None, approval: None, bypassed: None, sub: None };
+        let mut tool = ToolStep { call_id: id.clone(), name: name.clone(), args: args.clone(), raw_args: String::new(), state: ToolState::Running, result: None, live_out: None, approval: None, bypassed: None, cleared: false, sub: None };
         if let Some(res) = results.get(&id) {
             let text = s(res, "content");
             tool.state = tool_state_for(&name, &text);
@@ -293,6 +294,7 @@ fn append_assistant(steps: &mut Vec<Step>, m: &Value, results: &std::collections
                 // 'run' (approve-all) or 'settings' (bypass on); older chats saved no reason
                 tool.bypassed = Some(res.get("_bypass_reason").and_then(|r| r.as_str()).unwrap_or("settings").to_string());
             }
+            tool.cleared = res.get("_cleared").is_some_and(|c| !c.is_null());
             if let Some(sub) = res.get("_sub") {
                 let aid = s(sub, "agent_id");
                 let who = Who::from(agents.iter().find(|a| a.id == aid), &aid);
@@ -384,7 +386,7 @@ impl Trace {
                             }
                         }
                     }
-                    None => c.push(Step::Tool(ToolStep { call_id: key, name: name.unwrap_or("tool").to_string(), args: Value::Null, raw_args: text.to_string(), state: ToolState::Writing, result: None, live_out: None, approval: None, bypassed: None, sub: None })),
+                    None => c.push(Step::Tool(ToolStep { call_id: key, name: name.unwrap_or("tool").to_string(), args: Value::Null, raw_args: text.to_string(), state: ToolState::Writing, result: None, live_out: None, approval: None, bypassed: None, cleared: false, sub: None })),
                 }
             }
             _ => {}
@@ -429,7 +431,7 @@ impl Trace {
 
     pub fn tool_start(&mut self, path: &[String], call_id: &str, name: &str, args: Value, agents: &[Agent]) {
         if let Some(c) = self.container(path, agents) {
-            c.push(Step::Tool(ToolStep { call_id: call_id.to_string(), name: name.to_string(), args, raw_args: String::new(), state: ToolState::Running, result: None, live_out: None, approval: None, bypassed: None, sub: None }));
+            c.push(Step::Tool(ToolStep { call_id: call_id.to_string(), name: name.to_string(), args, raw_args: String::new(), state: ToolState::Running, result: None, live_out: None, approval: None, bypassed: None, cleared: false, sub: None }));
         }
     }
 
@@ -483,6 +485,15 @@ impl Trace {
     pub fn bypassed(&mut self, path: &[String], call_id: &str, reason: &str, agents: &[Agent]) {
         if let Some(t) = self.find_tool(path, call_id, agents) {
             t.bypassed = Some(reason.to_string());
+        }
+    }
+
+    /// Old tool outputs cleared from what the model sees (they stay in the trace).
+    pub fn cleared(&mut self, path: &[String], call_ids: &[String], agents: &[Agent]) {
+        for id in call_ids {
+            if let Some(t) = self.find_tool(path, id, agents) {
+                t.cleared = true;
+            }
         }
     }
 
@@ -1056,6 +1067,9 @@ fn render_tool(t: &ToolStep, colors: &[Color], opts: &RenderOpts, r: &mut Render
     }
     if let Some(reason) = &t.bypassed {
         spans.push(Span::styled(format!("  auto-approved{}", if reason == "run" { " (this run)" } else { "" }), Style::default().fg(th.amber)));
+    }
+    if t.cleared {
+        spans.push(Span::styled("  cleared", Style::default().fg(th.muted)));
     }
     spans.push(Span::styled(format!("  {state_text}"), Style::default().fg(state_color)));
     r.push(Line::from(spans), owner);
@@ -1736,6 +1750,29 @@ mod tests {
     }
 
     #[test]
+    fn cleared_outputs_are_marked_saved_and_live() {
+        let ag = agents();
+        let th = Theme::dark();
+        let call = |id: &str| json!({ "id": id, "function": { "name": "read_file", "arguments": "{\"path\": \"a.txt\"}" } });
+        let chat = json!({ "agent_id": "coder", "messages": [
+            { "role": "user", "content": "go" },
+            { "role": "assistant", "content": "", "tool_calls": [call("t1"), call("t2")] },
+            { "role": "tool", "tool_call_id": "t1", "content": "1 | hello", "_cleared": { "at": 1.0, "upto": 3 } },
+            { "role": "tool", "tool_call_id": "t2", "content": "1 | world" },
+        ] });
+        let mut t = Trace::from_chat(&chat, &ag, None);
+        let marks = |t: &Trace| -> Vec<bool> {
+            let Entry::Turn(turn) = &t.entries[1] else { panic!("{:?}", t.entries.len()) };
+            turn.steps.iter().filter_map(|s| match s { Step::Tool(t) => Some(t.cleared), _ => None }).collect()
+        };
+        assert_eq!(marks(&t), [true, false]);
+        let lines = texts(&render(&t, &opts(&th, 80, false)));
+        assert_eq!(lines.iter().filter(|l| l.contains("read_file  a.txt  cleared  done")).count(), 1, "{lines:#?}");
+        t.cleared(&[], &["t2".to_string(), "gone".to_string()], &ag); // live: an unknown id is ignored
+        assert_eq!(marks(&t), [true, true]);
+    }
+
+    #[test]
     fn history_rebuilds_every_kind_of_saved_message() {
         let ag = agents();
         let chat = json!({
@@ -1831,9 +1868,9 @@ mod tests {
         steps.push(Step::Compacting { chars: 12_345 });
         steps.push(Step::Stopped);
         steps.push(Step::Notice("a notice long enough that it has to wrap onto a second line".into()));
-        steps.push(Step::Tool(ToolStep { call_id: "w".into(), name: "write_file".into(), args: json!({ "path": "a.txt", "content": "hello" }), raw_args: String::new(), state: ToolState::Running, result: Some("Wrote 5 bytes".into()), live_out: None, approval: None, bypassed: Some("settings".into()), sub: None }));
-        steps.push(Step::Tool(ToolStep { call_id: "e".into(), name: "edit_file".into(), args: json!({ "path": "b.py", "old_text": "a = 1", "new_text": "a = 2" }), raw_args: String::new(), state: ToolState::NeedsApproval, result: None, live_out: None, approval: Some("ap".into()), bypassed: None, sub: None }));
-        steps.push(Step::Tool(ToolStep { call_id: "m".into(), name: "email_send".into(), args: json!({ "to": "a@b.c", "subject": "Hi", "body": "Dear you" }), raw_args: String::new(), state: ToolState::Done, result: None, live_out: None, approval: None, bypassed: Some("run".into()), sub: None }));
+        steps.push(Step::Tool(ToolStep { call_id: "w".into(), name: "write_file".into(), args: json!({ "path": "a.txt", "content": "hello" }), raw_args: String::new(), state: ToolState::Running, result: Some("Wrote 5 bytes".into()), live_out: None, approval: None, bypassed: Some("settings".into()), cleared: false, sub: None }));
+        steps.push(Step::Tool(ToolStep { call_id: "e".into(), name: "edit_file".into(), args: json!({ "path": "b.py", "old_text": "a = 1", "new_text": "a = 2" }), raw_args: String::new(), state: ToolState::NeedsApproval, result: None, live_out: None, approval: Some("ap".into()), bypassed: None, cleared: false, sub: None }));
+        steps.push(Step::Tool(ToolStep { call_id: "m".into(), name: "email_send".into(), args: json!({ "to": "a@b.c", "subject": "Hi", "body": "Dear you" }), raw_args: String::new(), state: ToolState::Done, result: None, live_out: None, approval: None, bypassed: Some("run".into()), cleared: false, sub: None }));
         let quiet = texts(&render(&t, &opts(&th, 60, false)));
         for want in ["◌ working…", "○ thoughts  (Alt+O to show)", "○ thought for 2 min 5 s", "compacting: summarizing older messages… 12.3k chars", "■ stopped here", "◦ a notice long enough", "write_file  a.txt  auto-approved  running", "edit_file  b.py  needs approval", "email_send  a@b.c · Hi  auto-approved (this run)  done"] {
             assert!(quiet.iter().any(|l| l.contains(want)), "{want:?} in {quiet:#?}");

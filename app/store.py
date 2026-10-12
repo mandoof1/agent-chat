@@ -14,6 +14,8 @@ import time
 import uuid
 from pathlib import Path
 
+from . import history
+
 ROOT = Path(__file__).resolve().parent.parent
 DATA = Path(os.environ.get("AGENT_CHAT_DATA", ROOT / "data")).expanduser()
 AGENTS = DATA / "agents"
@@ -238,9 +240,7 @@ def fork_chat(chat: dict, upto: int) -> dict:
                  "title": f"{chat['title']} (branch)"[:120], "pinned": False})
     for key in ("parent", "routine_id", "subchats", "threads", "memory_upto", "auto_title"):
         fork.pop(key, None)
-    comps = fork.get("compactions") or []
-    while comps and comps[-1]["upto"] > upto:
-        comps.pop()
+    history.prune(fork, upto)
     for m in fork["messages"]:
         m.pop("_sub", None)
     _write(CHATS / f"{fork['id']}.json", fork)

@@ -452,6 +452,7 @@ details.thinking .think-text {
 .tool-card.draft { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: var(--surface); }
 .tool-card.draft .t-state { color: var(--accent); }
 .tool-card .t-auto { flex: none; font: 500 10.5px/1 var(--mono); color: var(--amber); padding: 3px 6px; border-radius: 3px; background: var(--amber-soft); }
+.tool-card .t-cleared { flex: none; font: 500 10.5px/1 var(--mono); color: var(--muted); padding: 3px 6px; border-radius: 3px; border: 1px dashed var(--line-2); }
 .tool-card.approval { border-color: var(--amber); background: var(--surface); }
 .approval-box { display: grid; gap: 10px; padding: 12px; border-radius: var(--r-sm); background: var(--amber-soft); }
 .approval-box .q { font-weight: 700; font-size: 14.5px; letter-spacing: -.01em; color: var(--amber); }

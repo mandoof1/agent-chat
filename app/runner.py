@@ -369,6 +369,24 @@ async def agent_loop(run: Run, agent: dict, chat: dict, *, depth: int, path: lis
         show_context(run, chat, path, tokens)
         return tokens
 
+    async def clear_outputs(everything: bool = False) -> int:
+        """Clear old tool outputs (history.clear_outputs). Returns the context size after, or 0 when
+        nothing was cleared."""
+        n_ctx = await run.context_size()
+        if not n_ctx:
+            return 0
+        before = estimate_context(agent, chat, caller, contacts, schemas)
+        ids = history.clear_outputs(chat, n_ctx=n_ctx, trigger=n_ctx * int(settings.get("compact_at") or 70) / 100,
+                                    fixed_chars=history.size([system()], schemas), everything=everything)
+        if not ids:
+            return 0
+        after = report_context()
+        run.emit("outputs_cleared", path=path, call_ids=ids, before_tokens=before, after_tokens=after)
+        run.emit("notice", path=path, text=f"Cleared {len(ids)} old tool output{'s' * (len(ids) > 1)} from what the model "
+                 f"sees, to save context ({before:,} → {after:,} tokens). They're still shown here.")
+        save()
+        return after
+
     max_steps = max(0, int(settings.get("max_steps", 30) or 0))  # 0 = no limit
     step = cutoffs = 0
     partial: list[str] = []  # answer text from replies that were cut off, joined into the final answer
@@ -383,11 +401,15 @@ async def agent_loop(run: Run, agent: dict, chat: dict, *, depth: int, path: lis
         if settings.get("auto_compact", True):
             n_ctx = await run.context_size()
             limit = (n_ctx or 0) * int(settings.get("compact_at") or 70) / 100
+            if n_ctx and tokens > limit * history.CLEAR_AT:
+                tokens = await clear_outputs() or tokens
             if n_ctx and tokens > limit:
                 await compact("auto")
 
         comp = await _complete(run, agent, chat, system(), schemas, path, save, settings)
-        if comp is None:  # the server said the context is full: compact and retry once
+        if comp is None and await clear_outputs(everything=True):  # the server said the context is full
+            comp = await _complete(run, agent, chat, system(), schemas, path, save, settings)
+        if comp is None:  # still full: compact and retry once
             if not await compact("overflow"):
                 raise llm.LLMError("The conversation no longer fits in the model's context window and could not "
                                    "be compacted. Start a new chat, or raise --ctx-size.")
@@ -420,7 +442,8 @@ async def agent_loop(run: Run, agent: dict, chat: dict, *, depth: int, path: lis
             # reply's thinking instead of the whole thing (history.continuation).
             n_ctx = await run.context_size()
             prompt_tokens = stats.get("prompt_tokens") or 0
-            if n_ctx and prompt_tokens > n_ctx / 2 and not await compact("cutoff") and prompt_tokens > n_ctx * 0.9:
+            if (n_ctx and prompt_tokens > n_ctx / 2 and not (await clear_outputs() or await compact("cutoff"))
+                    and prompt_tokens > n_ctx * 0.9):
                 raise llm.LLMError("The conversation fills the model's context window, so replies get cut off, "
                                    "and it could not be compacted. Start a new chat, or raise --ctx-size.")
             run.emit("notice", path=path, text="The reply filled the context window before it finished. "
@@ -439,6 +462,7 @@ async def agent_loop(run: Run, agent: dict, chat: dict, *, depth: int, path: lis
 
         for tc in msg["tool_calls"]:
             result, sub = await execute_tool(run, agent, tc, depth=depth, path=path, chain=chain)
+            result = history.fit_output(result, chat, await run.context_size())
             tool_msg = {"role": "tool", "tool_call_id": tc["id"], "content": result}
             if sub:
                 tool_msg["_sub"] = sub
