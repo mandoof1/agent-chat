@@ -27,6 +27,7 @@ class Completion:
         self.timings: dict | None = None
         self.reason_t0: float | None = None  # when the first / last piece of thinking arrived
         self.reason_t1: float | None = None
+        self.looped: dict | None = None  # set when the loop guard stopped the reply (loops.Looping)
 
     def message(self) -> dict:
         msg = {"role": "assistant", "content": self.content}

@@ -1269,6 +1269,7 @@ impl App {
             .text("parallel_subagents", "Subagents at once", &g("parallel_subagents"), "0 = as many as the server serves at once")
             .bool("auto_title", "Let the model name each chat after its first reply", b("auto_title"), "")
             .bool("auto_memory", "Let the model save new things it learned about you", b("auto_memory"), "")
+            .bool("loop_guard", "Loop guard: stop replies that repeat themselves, warn on repeated tool calls", s.get("loop_guard").and_then(|v| v.as_bool()).unwrap_or(true), "")
             .bool("bypass_approvals", "Bypass permissions (run commands and send email without asking)", b("bypass_approvals"), "")
             .danger("bypass_approvals")
             .text("search_url", "Search engine URL", &g("search_url"), "a SearXNG instance; empty scrapes DuckDuckGo")
@@ -1521,6 +1522,7 @@ impl App {
                         "parallel_subagents": form.json_number("parallel_subagents"),
                         "auto_title": form.boolean("auto_title"),
                         "auto_memory": form.boolean("auto_memory"),
+                        "loop_guard": form.boolean("loop_guard"),
                         "bypass_approvals": form.boolean("bypass_approvals"),
                         "search_url": form.string("search_url").trim(),
                         "browser_executable": form.string("browser_executable").trim(),

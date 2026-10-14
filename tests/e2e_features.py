@@ -155,10 +155,11 @@ async def test_compact_instructions(c):
 
 async def test_clear_tool_outputs(c):
     print("\n== old tool outputs are cleared before anything is compacted")
-    await settings(c, base_url=MOCK, auto_compact=True, compact_at=70)
+    await settings(c, base_url=MOCK, auto_compact=True, compact_at=70, loop_guard=False)  # the same read ten times
     chat = (await c.post(f"{B}/api/chats", json={"agent_id": "coder"})).json()["id"]
     await run_turn(c, chat, "write: " + "\n".join(f"line {i:04} " + "z" * 40 for i in range(400)))  # ~20k chars
     evs = await run_turn(c, chat, "readloop 10")
+    await settings(c, loop_guard=True)
     cleared = [e for e in evs if e["type"] == "outputs_cleared"]
     notices = [e["text"] for e in evs if e["type"] == "notice"]
     data = (await c.get(f"{B}/api/chats/{chat}")).json()

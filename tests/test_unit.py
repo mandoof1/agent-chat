@@ -11,7 +11,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 os.environ.setdefault("AGENT_CHAT_DATA", tempfile.mkdtemp(prefix="ac-unit-"))
 
-from app import history, memory, routines, store, tools  # noqa: E402
+from app import history, loops, memory, routines, store, tools  # noqa: E402
 from app.history import QUEUED_NOTE  # noqa: E402
 
 
@@ -50,6 +50,60 @@ def test_cutoff_replies_collapse_into_one_continuation():
             {"role": "assistant", "content": "p2", "reasoning_content": "r2", "_truncated": True}]
     out = history.to_llm(msgs)
     assert len(out) == 2 and out[1]["role"] == "user" and "r2" in out[1]["content"] and "r1" not in out[1]["content"]
+
+
+def test_loop_guard_stops_repetition_not_length():
+    passage = ("Plan: build the board with three columns, wire the drag handlers between them, save every change "
+               "to localStorage, then open it in a browser and check that a reload keeps the cards in place. ")
+    looping = "First some honest thinking about the task.\n\n" + passage * 20
+    rep = loops.Repetition()
+    try:
+        for i in range(0, len(looping), 7):
+            rep.feed("reasoning", looping[i:i + 7])
+        raise AssertionError("the loop went unnoticed")
+    except loops.Looping as e:
+        info = e.info
+    seen = rep.text["reasoning"]
+    assert len(seen) < len(looping) and info["channel"] == "reasoning" and info["repeats"] >= loops.REPEATS
+    assert seen[:info["keep"]].count(passage) == 1 and seen[:info["keep"]].startswith("First some honest"), info
+    # long, but always saying something new (numbered steps, code with the same shape): never stopped
+    long = "\n".join(f"Step {i}: check option {i} against the {i % 7}th constraint, then note what it costs." for i in range(3000))
+    code = "\n".join(f"    <li class=\"item\"><a href=\"#s{i}\">Section {i}</a></li>" for i in range(500))
+    rule = "=" * 5000 + "0" * 5000  # few distinct characters: a rule, a run of zeros
+    for text in (long, code, rule):
+        rep = loops.Repetition()
+        for i in range(0, len(text), 50):
+            rep.feed("content", text[i:i + 50])
+    rep.feed("tool_args", passage * 20)  # tool arguments (a file's content) are not watched
+
+
+def test_loop_note_replaces_the_looping_reply():
+    passage = "the same plan again and again " * 4
+    m = {"role": "assistant", "content": "", "reasoning_content": "intro. " + passage * 6,
+         "_looped": {"channel": "reasoning", "repeats": 6, "keep": len("intro. " + passage)}}
+    out = history.to_llm([{"role": "user", "content": "go"}, m])
+    assert len(out) == 2 and out[1]["role"] == "user" and "stuck in a loop" in out[1]["content"]
+    assert out[1]["content"].count(passage) == 1 and "intro." in out[1]["content"]
+
+
+def test_repeated_tool_calls_are_flagged_from_the_third():
+    def call(i, args='{"path": "."}'):
+        return [{"role": "assistant", "content": "", "tool_calls": [{"id": f"c{i}", "type": "function", "function": {"name": "list_dir", "arguments": args}}]},
+                {"role": "tool", "tool_call_id": f"c{i}", "content": "a.txt"}]
+    msgs = [{"role": "user", "content": "go"}]
+    for i in range(2):
+        msgs += call(i)
+        assert loops.mark_repeats(msgs, 0) == (0, "")
+    msgs += call(2, '{"path":"."}')  # the same arguments, written differently
+    assert loops.mark_repeats(msgs, 0) == (3, "list_dir") and msgs[-1]["_repeat"] == 3
+    assert loops.repeat_note(3) in history.to_llm(msgs)[-1]["content"]
+    msgs += call(3)
+    msgs[-1]["content"] = "a.txt b.txt"  # a different result is progress, not a loop
+    assert loops.mark_repeats(msgs, 0) == (0, "")
+    msgs[2]["_cleared"] = {"at": 1}  # an output the model no longer sees doesn't count
+    msgs += call(4)
+    assert loops.mark_repeats(msgs, 0) == (3, "list_dir")
+    assert loops.mark_repeats(msgs, len(msgs) - 2) == (0, ""), "only this task's calls count"
 
 
 def test_repair_answers_orphan_tool_calls():
@@ -253,6 +307,7 @@ def test_agent_loop_does_not_compact_over_and_over():
         async def read_file(run, agent, tc, **kw):
             return "line of file content\n" * 140, None  # ~800 tokens per step
         store.seed_defaults()
+        store.save_settings({"loop_guard": False})  # the same read, the same result, step after step: not a loop here
         agent, chat = store.get_agent("coder"), store.create_chat("coder")
         run = runner.Run(chat)
         run.n_ctx = n_ctx
@@ -269,6 +324,7 @@ def test_agent_loop_does_not_compact_over_and_over():
         finally:
             llm.stream_chat, runner.execute_tool = real
             runner.views.pop(chat["id"], None)
+            store.save_settings({"loop_guard": True})
         return answer, calls, comps
 
     # a model that thinks past the window: no compaction can help, so none is done, and it stops

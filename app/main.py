@@ -177,6 +177,7 @@ class SettingsIn(In):
     auto_memory: bool | None = None
     auto_title: bool | None = None
     bypass_approvals: bool | None = None
+    loop_guard: bool | None = None
     search_url: str | None = None
     browser_headless: bool | None = None
     browser_executable: str | None = None

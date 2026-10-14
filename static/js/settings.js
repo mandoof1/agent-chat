@@ -28,6 +28,7 @@ export function openSettings(tab = "model") {
   f("auto_compact").checked = S.settings.auto_compact !== false;
   f("auto_memory").checked = S.settings.auto_memory !== false;
   f("auto_title").checked = S.settings.auto_title !== false;
+  f("loop_guard").checked = S.settings.loop_guard !== false;
   f("bypass_approvals").checked = !!S.settings.bypass_approvals;
   f("compact_at").value = S.settings.compact_at ?? 70;
   f("context_size").value = S.settings.context_size ?? 0;
@@ -209,6 +210,7 @@ form.addEventListener("submit", async (e) => {
       auto_compact: f("auto_compact").checked,
       auto_memory: f("auto_memory").checked,
       auto_title: f("auto_title").checked,
+      loop_guard: f("loop_guard").checked,
       bypass_approvals: f("bypass_approvals").checked,
       compact_at: Math.min(95, Math.max(30, Number(f("compact_at").value) || 70)),
       context_size: Math.max(0, Number(f("context_size").value) || 0),

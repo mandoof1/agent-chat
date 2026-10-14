@@ -39,6 +39,7 @@ run unit      uv run python tests/test_unit.py
 run e2e       uv run python tests/e2e.py
 run features  uv run python tests/e2e_features.py
 run cutoff    uv run python tests/e2e_cutoff.py
+run loops     uv run python tests/e2e_loops.py
 run ctx       uv run python tests/e2e_ctx.py
 run queue     env PYTHONPATH=. uv run python tests/e2e_queue.py
 run memory    uv run python tests/e2e_memory.py

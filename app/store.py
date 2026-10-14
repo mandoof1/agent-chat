@@ -37,6 +37,7 @@ DEFAULT_SETTINGS = {
     "auto_memory": True,   # after each reply, let the model save new facts about the user
     "auto_title": True,    # after the first reply, let the model name the chat
     "bypass_approvals": False,  # run shell commands and send email without asking
+    "loop_guard": True,    # stop replies that keep repeating themselves and warn on repeated tool calls (app/loops.py)
     "search_url": "",      # SearXNG base URL for web_search (JSON API); empty = scrape DuckDuckGo
     "browser_headless": True,              # Browser agent: run Brave headless (True) or visible (False)
     "browser_executable": "/usr/bin/brave",  # path to the Brave (or other Chromium) binary to drive

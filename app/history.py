@@ -17,7 +17,7 @@ import time
 
 import httpx
 
-from . import llm
+from . import llm, loops
 
 DEFAULT_CHARS_PER_TOKEN = 3.0  # until a real reply calibrates it (code and JSON are dense)
 KEEP_FRACTION = 0.2            # recent context kept word for word after an automatic compaction (at most)
@@ -81,7 +81,8 @@ def to_llm(messages: list[dict], memory: bool = True, images: bool = False) -> l
     and our size estimate. Thinking within the current turn is kept (interleaved tool use).
 
     A reply of the current turn that the context window cut off is replaced by a continuation
-    note (see `continuation`); when several were cut off in a row, only the newest is sent.
+    note (see `continuation`), and one the loop guard stopped by a note to move on (loops.note);
+    when several were cut off or stopped in a row, only the newest is sent.
 
     A message the user queued while the agent was working (`_queued`) is labelled as such, so the
     model treats it as an aside to the task in progress rather than a fresh request.
@@ -91,7 +92,7 @@ def to_llm(messages: list[dict], memory: bool = True, images: bool = False) -> l
     right before the request (so the base64 never counts towards the context-size estimate)."""
     live = [i for i, m in enumerate(messages) if not m.get("_error")]
     last_user = max((i for i in live if messages[i].get("role") == "user"), default=-1)
-    cut_off = {i for i in live if i > last_user and messages[i].get("_truncated")}
+    cut_off = {i for i in live if i > last_user and (messages[i].get("_truncated") or messages[i].get("_looped"))}
     if cut_off:
         last_user = max(cut_off)  # the note acts as a new user turn, so older thinking is dropped
     out = []
@@ -99,7 +100,7 @@ def to_llm(messages: list[dict], memory: bool = True, images: bool = False) -> l
         m = messages[i]
         if i in cut_off:
             if k + 1 == len(live) or live[k + 1] not in cut_off:  # a run of them resumes from the newest
-                out.append(continuation(m))
+                out.append(loops.note(m, m.get("_carry") or CONTINUE_TAIL) if m.get("_looped") else continuation(m))
             continue
         clean = {k: v for k, v in sent(m).items() if not k.startswith("_")}
         if i < last_user:
@@ -137,6 +138,8 @@ def sent(m: dict) -> dict:
     """`m` as clearing leaves it for the model (its private fields still on)."""
     if m.get("_cleared") and m.get("role") == "tool":
         m = m | {"content": cleared_note(m)}
+    if m.get("_repeat") and m.get("role") == "tool":  # the loop guard's word, fixed once added
+        m = m | {"content": f"{m['content']}\n\n{loops.repeat_note(m['_repeat'])}"}
     if m.get("_cleared_args") and m.get("tool_calls"):
         m = m | {"tool_calls": [tc | {"function": tc["function"] | {"arguments": cleared_args(tc)}}
                                 if tc["id"] in m["_cleared_args"] else tc for tc in m["tool_calls"]]}

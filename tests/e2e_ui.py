@@ -542,7 +542,11 @@ async def cleared_outputs_are_tagged(page):
     await page.evaluate("""() => { window.__liveCleared = false;  // the run is quick: note a live tag whenever it shows
         new MutationObserver(() => { if (document.querySelector('#live .tool-card .t-cleared')) window.__liveCleared = true; })
             .observe(document.querySelector('#messages'), { subtree: true, childList: true }); }""")
-    await send(page, "readloop 10")
+    await api("PUT", "/api/settings", {"loop_guard": False})  # the same read ten times, on purpose
+    try:
+        await send(page, "readloop 10")
+    finally:
+        await api("PUT", "/api/settings", {"loop_guard": True})
     assert await page.evaluate("window.__liveCleared"), "the live turn's cards are tagged as the outputs are cleared"
     msgs = (await chat_now(page))["messages"]
     cleared = sum(bool(m.get("_cleared")) for m in msgs) + sum(len(m.get("_cleared_args") or {}) for m in msgs)
