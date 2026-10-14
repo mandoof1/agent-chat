@@ -384,6 +384,10 @@ function toolCard(name, args, live, owner = null) {
   const isSub = name === "subagent";
   const isAsk = name === "ask_agent" || isSub;
   const state = el("span", { class: "t-state" + (live ? " run" : "") }, live ? "running" : "");
+  // how long it has run: counting while it runs (from the server's start time), then what it took
+  const time = el("span", { class: "t-time" });
+  const clockFrom = (ts) => { time.dataset.since = ts || Date.now() / 1000; time.textContent = fmtSpan(Date.now() / 1000 - time.dataset.since); };
+  const clockStop = (secs) => { delete time.dataset.since; time.textContent = secs >= 1 ? fmtSpan(secs) : ""; };
   const summary = el("summary");
   const body = el("div", { class: "t-body" });
   const card = el("details", { class: "tool-card" + (isAsk ? " sub" : "") }, summary, body);
@@ -395,7 +399,7 @@ function toolCard(name, args, live, owner = null) {
     const text = args.task ?? args.message ?? "";
     card.style.setProperty("--c", owner?.color || "#7c6cff");
     summary.append(el("span", { class: "patch" }, svgIcon("branch"), "subagent"), el("span", { class: "t-name" }, args.description || "task"),
-      el("span", { class: "t-arg" }, oneLine(text)), state);
+      el("span", { class: "t-arg" }, oneLine(text)), state, time);
     subBody = el("div", { class: "sub-body" });
     body.append(el("div", { class: "t-label" }, "Task"), el("div", { class: "sub-task" }, text), subBody);
     if (live || S.verbose) card.open = true;
@@ -404,19 +408,20 @@ function toolCard(name, args, live, owner = null) {
     const text = args.message ?? args.task ?? "";
     card.style.setProperty("--c", target.color || "#7c6cff");
     summary.append(el("span", { class: "patch" }, svgIcon("handoff"), "handoff"), avatar(target, "xs"), el("span", { class: "t-name" }, target.name),
-      el("span", { class: "t-arg" }, oneLine(text)), state);
+      el("span", { class: "t-arg" }, oneLine(text)), state, time);
     subBody = el("div", { class: "sub-body" });
     body.append(el("div", { class: "t-label" }, "Message"), el("div", { class: "sub-task" }, text), subBody);
     if (live || S.verbose) card.open = true;
   } else {
     summary.append(el("span", { class: "t-name" }, name),
-      el("span", { class: "t-arg" }, argSummary(name, args) || ""), state);
+      el("span", { class: "t-arg" }, argSummary(name, args) || ""), state, time);
     body.append(...argDetails(name, args));
     if (S.verbose) card.open = true;
   }
 
   return {
     el: card, subBody, name,
+    startClock: clockFrom,
     setChat(chatId) {
       if (!subBody || !chatId || card.querySelector(".open-sub")) return;
       subBody.before(el("button", {
@@ -441,8 +446,9 @@ function toolCard(name, args, live, owner = null) {
       liveOut.textContent = text;
       if (follow) liveOut.scrollTop = liveOut.scrollHeight;
     },
-    setResult(text) {
+    setResult(text, secs) {
       text = String(text ?? "");
+      clockStop(secs);
       liveOut?.previousSibling?.remove();
       liveOut?.remove();
       liveOut = null;
@@ -464,6 +470,7 @@ function toolCard(name, args, live, owner = null) {
       card.open = true;
       state.className = "t-state";
       state.textContent = "needs approval";
+      clockStop(0);  // waiting for you isn't running time
       const yes = el("button", { class: "btn ok sm", type: "button" }, "Approve");
       const all = el("button", { class: "btn sm", type: "button", title: "Approve this and everything else the agent asks for until this run ends" }, "Approve all for this run");
       const no = el("button", { class: "btn danger sm", type: "button" }, "Deny");
@@ -492,12 +499,13 @@ function toolCard(name, args, live, owner = null) {
       if (!summary.querySelector(".t-cleared")) state.before(el("span", { class: "t-cleared",
         title: "Cleared from what the model sees, to save context: it gets a short note instead and can run the tool again. The output is still here." }, "cleared"));
     },
-    approvalDone(approved, everything) {
+    approvalDone(approved, everything, ts) {
       approvalBox?.remove();
       approvalBox = null;
       card.classList.remove("approval");
       state.className = "t-state " + (approved ? "run" : "err");
       state.textContent = approved ? "running" : "denied";
+      if (approved) clockFrom(ts);
       if (everything) toast("Approved for the rest of this run. New runs ask again.", "info");
     },
   };
@@ -556,7 +564,7 @@ function appendAssistant(container, m, results, index) {
       card.setChat(res._sub.chat_id);
       renderSubTranscript(card.subBody, res._sub.messages);
     }
-    if (res) card.setResult(res.content);
+    if (res) card.setResult(res.content, res._secs);
     container.append(card.el);
     if (res?._repeat) container.append(noticeEl(repeatText(tc.function.name, res._repeat)));
   }
@@ -882,6 +890,7 @@ function liveToolStart(ev) {
   const draft = c.drafts?.shift();
   if (draft?.el.isConnected) draft.el.replaceWith(card.el);
   else c.body.append(card.el);
+  card.startClock(ev.ts);
   S.live.cards.set(ev.call_id, card);
   if (card.subBody) S.live.containers.set(pkey([...(ev.path || []), ev.call_id]), { body: card.subBody, seg: null });
 }
@@ -926,7 +935,7 @@ export function handleEvent(ev) {
       return;
     case "tool_result": {
       const card = S.live?.cards.get(ev.call_id);
-      card?.setResult(ev.content);
+      card?.setResult(ev.content, ev.secs);
       if (card && FILE_TOOLS.has(card.name)) filesChanged();
       break;
     }
@@ -957,7 +966,7 @@ export function handleEvent(ev) {
       break;
     }
     case "approval": S.live?.cards.get(ev.call_id)?.askApproval(ev.approval_id); break;
-    case "approval_done": S.live?.cards.get(ev.call_id)?.approvalDone(ev.approved, ev.all); break;
+    case "approval_done": S.live?.cards.get(ev.call_id)?.approvalDone(ev.approved, ev.all, ev.ts); break;
     case "approval_bypassed": S.live?.cards.get(ev.call_id)?.markBypassed(ev.reason); break;
     case "outputs_cleared": for (const id of ev.call_ids || []) S.live?.cards.get(id)?.markCleared(); break;
     case "notice": liveContainer(ev.path)?.body.append(noticeEl(ev.text)); break;

@@ -104,6 +104,7 @@ class Run:
         self.base = len(chat["messages"])  # messages before this index existed when the run started
         self.approvals: dict[str, asyncio.Future] = {}
         self.approval_paths: dict[str, tuple] = {}  # approval id -> the path of the agent that asked
+        self.waited: dict[str, float] = {}  # call id -> seconds it waited for an approval (not its run time)
         self.task: asyncio.Task | None = None
         self.stack = [View(self, chat, [], self.base)]  # active views, root first, deepest last
         self.n_ctx: int | None = None
@@ -225,15 +226,17 @@ class Run:
         self.approval_paths[approval_id] = tuple(path)
         self.emit("approval", path=path, approval_id=approval_id, call_id=call_id, name=name, args=args)
         self.publish()
+        asked = time.time()
         try:
             approved, everything = await fut
         finally:
             self.approvals.pop(approval_id, None)
             self.approval_paths.pop(approval_id, None)
+            self.waited[call_id] = self.waited.get(call_id, 0) + time.time() - asked
         if approved and everything:
             self.auto_approve = True
         self.emit("approval_done", path=path, approval_id=approval_id, call_id=call_id, approved=approved,
-                  **({"all": True} if approved and everything else {}))
+                  ts=time.time(), **({"all": True} if approved and everything else {}))
         self.publish()
         return approved
 
@@ -683,10 +686,13 @@ async def run_tools(run: Run, agent: dict, chat: dict, batch: list[dict], *, dep
     messages = chat["messages"]
     in_sub = is_subagent(chat)
     done: dict[str, tuple[str, dict | None]] = {}
+    took: dict[str, float] = {}  # call id -> seconds it ran (approval waits left out)
     added = 0
 
     def add(tc: dict, result: str, sub: dict | None) -> None:
         tool_msg = {"role": "tool", "tool_call_id": tc["id"], "content": result}
+        if tc["id"] in took:
+            tool_msg["_secs"] = took[tc["id"]]
         if sub:
             tool_msg["_sub"] = sub
         if tc["id"] in run.bypassed:  # the reason too, so a saved chat still says "(this run)"
@@ -695,22 +701,25 @@ async def run_tools(run: Run, agent: dict, chat: dict, batch: list[dict], *, dep
 
     async def one(tc: dict, limit: asyncio.Semaphore | None) -> None:
         nonlocal added
+        t0 = time.time()
         if limit is None:
             result, sub = await execute_tool(run, agent, tc, depth=depth, path=path, chain=chain, in_subagent=in_sub)
         else:
             try:
                 async with limit:
+                    t0 = time.time()  # (not the wait for a free slot)
                     result, sub = await execute_tool(run, agent, tc, depth=depth, path=path, chain=chain,
                                                      in_subagent=in_sub)
             except Exception as e:  # one subagent's failure doesn't stop the others
                 log.exception("subagent call %s failed", tc["id"])
                 result, sub = f"Error: {type(e).__name__}: {e}", None
+        took[tc["id"]] = round(max(0.0, time.time() - t0 - run.waited.pop(tc["id"], 0)), 1)
         done[tc["id"]] = (history.fit_output(result, chat, await run.context_size()), sub)
         while added < len(batch) and batch[added]["id"] in done:  # the results in order, as far as they go
             add(batch[added], *done[batch[added]["id"]])
             added += 1
         save()
-        run.emit("tool_result", path=path, call_id=tc["id"], content=done[tc["id"]][0])
+        run.emit("tool_result", path=path, call_id=tc["id"], content=done[tc["id"]][0], secs=took[tc["id"]])
 
     try:
         if len(batch) == 1:
@@ -736,10 +745,10 @@ async def execute_tool(run: Run, agent: dict, tc: dict, *, depth: int, path: lis
         if not isinstance(args, dict):
             raise ValueError
     except ValueError:
-        run.emit("tool_start", path=path, call_id=tc["id"], name=name, args={"_raw": raw})
+        run.emit("tool_start", path=path, call_id=tc["id"], name=name, args={"_raw": raw}, ts=time.time())
         return f"Error: tool arguments were not valid JSON: {raw[:300]}", None
 
-    run.emit("tool_start", path=path, call_id=tc["id"], name=name, args=args)
+    run.emit("tool_start", path=path, call_id=tc["id"], name=name, args=args, ts=time.time())
     if name in memory.SCHEMAS:
         if not agent["memory"]:
             return "Error: memory is turned off for you.", None

@@ -163,6 +163,23 @@ pub fn fit(s: &str, cols: usize) -> &str {
     s
 }
 
+/// The part of `s` drawn in columns `from` up to (not including) `to`: a wide character goes with
+/// the column it starts in.
+pub fn cols(s: &str, from: usize, to: usize) -> &str {
+    let (mut at, mut start, mut end) = (0, s.len(), s.len());
+    for (i, c) in s.char_indices() {
+        if at >= from && start == s.len() {
+            start = i;
+        }
+        if at >= to {
+            end = i;
+            break;
+        }
+        at += char_width(c);
+    }
+    if start > end { "" } else { &s[start..end] }
+}
+
 /// The longest end of `s` that fits in `cols` columns.
 pub fn fit_end(s: &str, cols: usize) -> &str {
     let mut used = 0;
@@ -393,6 +410,15 @@ pub fn burst_char(k: &KeyEvent) -> Option<char> {
 pub(crate) mod tests {
     use super::*;
     use ratatui::layout::Rect;
+
+    #[test]
+    fn cols_cuts_by_columns() {
+        assert_eq!(cols("abcdef", 1, 4), "bcd");
+        assert_eq!(cols("ab日本cd", 2, 5), "日本");
+        assert_eq!(cols("ab日本cd", 3, 5), "本", "a wide character goes with the column it starts in");
+        assert_eq!(cols("abc", 2, usize::MAX), "c");
+        assert_eq!(cols("abc", 5, 9), "");
+    }
 
     #[test]
     fn normalize_line_endings_and_controls() {

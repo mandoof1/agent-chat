@@ -177,15 +177,24 @@ async def test_shell_progress(c):
 
     async def on(ev):
         if ev["type"] == "approval":
+            await asyncio.sleep(1.5)  # the time it waits for you isn't the time it ran
             await c.post(f"{B}/api/chats/{chat}/approvals/{ev['approval_id']}", json={"approve": True})
         elif ev["type"] == "tool_progress":
             progress.append(ev["content"])
 
     seen = await run_turn(c, chat, "slow shell", on_event=on)
-    result = next(e["content"] for e in seen if e["type"] == "tool_result")
+    done = next(e for e in seen if e["type"] == "tool_result")
+    result = done["content"]
     print(f"  {len(progress)} progress updates; last: {progress[-1].strip().splitlines() if progress else None}")
     assert len(progress) >= 2 and "tick1" in progress[-1]
     assert result.startswith("exit code 0") and "tick4" in result
+    # how long it ran (about 1.6 s), for the clocks on the cards: the start, the restart once
+    # approved, and what it took, also kept in the chat
+    start = next(e for e in seen if e["type"] == "tool_start")
+    approved = next(e for e in seen if e["type"] == "approval_done")
+    saved = next(m for m in (await c.get(f"{B}/api/chats/{chat}")).json()["messages"] if m["role"] == "tool")
+    print("  took:", done["secs"], "s; waited for the approval:", round(approved["ts"] - start["ts"], 1), "s")
+    assert approved["ts"] - start["ts"] >= 1.4 and 1.2 <= done["secs"] < 2.8 and saved["_secs"] == done["secs"]
 
 
 async def test_workspace(c):

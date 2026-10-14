@@ -96,6 +96,10 @@ pub struct ToolStep {
     pub bypassed: Option<String>,
     pub cleared: bool, // the model sees a short note in place of the output (it is still shown here)
     pub sub: Option<Sub>,
+    /// When it started running (the server's clock; restarted when an approval lets it run), and
+    /// what it took once done (approval waits left out): the trace shows both.
+    pub started: Option<f64>,
+    pub secs: Option<f64>,
 }
 
 /// Ended thinking, wrapped for a width and theme and kept between frames: the reply in progress
@@ -313,7 +317,7 @@ fn append_assistant(steps: &mut Vec<Step>, m: &Value, results: &std::collections
         let args = serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| serde_json::json!({ "_raw": raw }));
         // a written file's content cleared from what the model sees (the file holds it)
         let args_cleared = m.get("_cleared_args").and_then(|a| a.get(&id)).is_some_and(|c| !c.is_null());
-        let mut tool = ToolStep { call_id: id.clone(), name: name.clone(), args: args.clone(), raw_args: String::new(), state: ToolState::Running, result: None, live_out: None, approval: None, bypassed: None, cleared: args_cleared, sub: None };
+        let mut tool = ToolStep { call_id: id.clone(), name: name.clone(), args: args.clone(), raw_args: String::new(), state: ToolState::Running, result: None, live_out: None, approval: None, bypassed: None, cleared: args_cleared, sub: None, started: None, secs: None };
         if let Some(res) = results.get(&id) {
             let text = s(res, "content");
             tool.state = tool_state_for(&name, &text);
@@ -322,6 +326,7 @@ fn append_assistant(steps: &mut Vec<Step>, m: &Value, results: &std::collections
                 tool.bypassed = Some(res.get("_bypass_reason").and_then(|r| r.as_str()).unwrap_or("settings").to_string());
             }
             tool.cleared |= res.get("_cleared").is_some_and(|c| !c.is_null());
+            tool.secs = res.get("_secs").and_then(|x| x.as_f64());
             if let Some(sub) = res.get("_sub") {
                 let aid = s(sub, "agent_id");
                 let who = Who::from(agents.iter().find(|a| a.id == aid), &aid);
@@ -417,7 +422,7 @@ impl Trace {
                             }
                         }
                     }
-                    None => c.push(Step::Tool(ToolStep { call_id: key, name: name.unwrap_or("tool").to_string(), args: Value::Null, raw_args: text.to_string(), state: ToolState::Writing, result: None, live_out: None, approval: None, bypassed: None, cleared: false, sub: None })),
+                    None => c.push(Step::Tool(ToolStep { call_id: key, name: name.unwrap_or("tool").to_string(), args: Value::Null, raw_args: text.to_string(), state: ToolState::Writing, result: None, live_out: None, approval: None, bypassed: None, cleared: false, sub: None, started: None, secs: None })),
                 }
             }
             _ => {}
@@ -462,8 +467,33 @@ impl Trace {
 
     pub fn tool_start(&mut self, path: &[String], call_id: &str, name: &str, args: Value, agents: &[Agent]) {
         if let Some(c) = self.container(path, agents) {
-            c.push(Step::Tool(ToolStep { call_id: call_id.to_string(), name: name.to_string(), args, raw_args: String::new(), state: ToolState::Running, result: None, live_out: None, approval: None, bypassed: None, cleared: false, sub: None }));
+            c.push(Step::Tool(ToolStep { call_id: call_id.to_string(), name: name.to_string(), args, raw_args: String::new(), state: ToolState::Running, result: None, live_out: None, approval: None, bypassed: None, cleared: false, sub: None, started: None, secs: None }));
         }
+    }
+
+    /// The call started running at `ts` (tool_start, or an approval that let it run).
+    pub fn tool_clock(&mut self, path: &[String], call_id: &str, ts: f64, agents: &[Agent]) {
+        if let Some(t) = self.find_tool(path, call_id, agents) {
+            t.started = Some(ts);
+        }
+    }
+
+    /// What the call took (tool_result's `secs`).
+    pub fn tool_took(&mut self, path: &[String], call_id: &str, secs: f64, agents: &[Agent]) {
+        if let Some(t) = self.find_tool(path, call_id, agents) {
+            t.secs = Some(secs);
+        }
+    }
+
+    /// A call is running with its clock going somewhere in the trace (the clock needs redrawing).
+    pub fn clock_running(&self) -> bool {
+        fn any(steps: &[Step]) -> bool {
+            steps.iter().any(|s| match s {
+                Step::Tool(t) => (t.state == ToolState::Running && t.started.is_some()) || t.sub.as_ref().is_some_and(|sub| any(&sub.steps)),
+                _ => false,
+            })
+        }
+        self.entries.iter().rev().take(2).any(|e| matches!(e, Entry::Turn(t) if any(&t.steps)))
     }
 
     pub fn tool_progress(&mut self, path: &[String], call_id: &str, text: &str, agents: &[Agent]) {
@@ -1095,6 +1125,12 @@ fn render_tool(t: &ToolStep, colors: &[Color], opts: &RenderOpts, r: &mut Render
         ToolState::Failed(l) => ("●", th.danger, l.clone(), th.danger),
         ToolState::NeedsApproval => ("◆", th.amber, "needs approval".to_string(), th.amber),
     };
+    // how long: counting while it runs, then what it took (a second or more)
+    let state_text = match (&t.state, t.started, t.secs) {
+        (ToolState::Running, Some(t0), _) if now() - t0 >= 1.0 => format!("{state_text} · {}", fmt_secs((now() - t0).floor())),
+        (ToolState::Done | ToolState::Failed(_), _, Some(s)) if s >= 1.0 => format!("{state_text} · {}", fmt_secs(s)),
+        _ => state_text,
+    };
     let is_sub = t.name == "subagent";
     let is_handoff = t.name == "ask_agent" || is_sub;
     let mut spans = prefix(colors, th, Some((marker, mcolor)));
@@ -1376,6 +1412,35 @@ mod tests {
         assert_eq!(count(&hidden), 0);
         assert!(hidden.iter().any(|l| l.ends_with("thought for 3 s  (Alt+T to show)")), "{hidden:?}");
         assert_eq!(count(&texts(&render(&t, &opts(&th, 60, true)))), 40, "verbose shows it too");
+    }
+
+    #[test]
+    fn a_running_call_counts_up_and_a_finished_one_says_what_it_took() {
+        let ag = agents();
+        let th = Theme::dark();
+        let mut t = Trace::empty();
+        t.start_turn(Who::from(ag.first(), "coder"), 1);
+        t.assistant_start(&[], &ag);
+        t.assistant_end(&[], &json!({ "content": "" }), &ag);
+        t.tool_start(&[], "c1", "run_shell", json!({ "command": "make" }), &ag);
+        let line = |t: &Trace| texts(&render(t, &opts(&th, 90, false))).into_iter().find(|l| l.contains("run_shell")).unwrap();
+        assert!(line(&t).ends_with("running") && !t.clock_running(), "no clock from the server: {}", line(&t));
+        t.tool_clock(&[], "c1", now() - 75.0, &ag);
+        assert!(t.clock_running() && line(&t).ends_with("running · 1 min 15 s"), "{}", line(&t));
+        t.tool_result(&[], "c1", "exit code 0\nok", &ag);
+        t.tool_took(&[], "c1", 74.6, &ag);
+        assert!(!t.clock_running() && line(&t).ends_with("done · 1 min 15 s"), "{}", line(&t));
+        // saved: what it took; under a second says nothing
+        let chat = json!({ "agent_id": "coder", "messages": [
+            { "role": "user", "content": "go" },
+            { "role": "assistant", "content": "", "tool_calls": [
+                { "id": "a", "function": { "name": "run_shell", "arguments": "{\"command\":\"sleep 3\"}" } },
+                { "id": "b", "function": { "name": "read_file", "arguments": "{\"path\":\"x\"}" } } ] },
+            { "role": "tool", "tool_call_id": "a", "content": "exit code 0\n", "_secs": 3.2 },
+            { "role": "tool", "tool_call_id": "b", "content": "1 | x", "_secs": 0.0 } ] });
+        let lines = texts(&render(&Trace::from_chat(&chat, &ag, None), &opts(&th, 90, false)));
+        assert!(lines.iter().any(|l| l.contains("sleep 3") && l.ends_with("done · 3 s")), "{lines:?}");
+        assert!(lines.iter().any(|l| l.contains("read_file") && l.ends_with("done")), "{lines:?}");
     }
 
     #[test]
@@ -2039,9 +2104,9 @@ mod tests {
         steps.push(Step::Compacting { chars: 12_345 });
         steps.push(Step::Stopped);
         steps.push(Step::Notice("a notice long enough that it has to wrap onto a second line".into()));
-        steps.push(Step::Tool(ToolStep { call_id: "w".into(), name: "write_file".into(), args: json!({ "path": "a.txt", "content": "hello" }), raw_args: String::new(), state: ToolState::Running, result: Some("Wrote 5 bytes".into()), live_out: None, approval: None, bypassed: Some("settings".into()), cleared: false, sub: None }));
-        steps.push(Step::Tool(ToolStep { call_id: "e".into(), name: "edit_file".into(), args: json!({ "path": "b.py", "old_text": "a = 1", "new_text": "a = 2" }), raw_args: String::new(), state: ToolState::NeedsApproval, result: None, live_out: None, approval: Some("ap".into()), bypassed: None, cleared: false, sub: None }));
-        steps.push(Step::Tool(ToolStep { call_id: "m".into(), name: "email_send".into(), args: json!({ "to": "a@b.c", "subject": "Hi", "body": "Dear you" }), raw_args: String::new(), state: ToolState::Done, result: None, live_out: None, approval: None, bypassed: Some("run".into()), cleared: false, sub: None }));
+        steps.push(Step::Tool(ToolStep { call_id: "w".into(), name: "write_file".into(), args: json!({ "path": "a.txt", "content": "hello" }), raw_args: String::new(), state: ToolState::Running, result: Some("Wrote 5 bytes".into()), live_out: None, approval: None, bypassed: Some("settings".into()), cleared: false, sub: None, started: None, secs: None }));
+        steps.push(Step::Tool(ToolStep { call_id: "e".into(), name: "edit_file".into(), args: json!({ "path": "b.py", "old_text": "a = 1", "new_text": "a = 2" }), raw_args: String::new(), state: ToolState::NeedsApproval, result: None, live_out: None, approval: Some("ap".into()), bypassed: None, cleared: false, sub: None, started: None, secs: None }));
+        steps.push(Step::Tool(ToolStep { call_id: "m".into(), name: "email_send".into(), args: json!({ "to": "a@b.c", "subject": "Hi", "body": "Dear you" }), raw_args: String::new(), state: ToolState::Done, result: None, live_out: None, approval: None, bypassed: Some("run".into()), cleared: false, sub: None, started: None, secs: None }));
         let quiet = texts(&render(&t, &opts(&th, 60, false)));
         for want in ["◌ working…", "○ thoughts  (Alt+T to show)", "○ thought for 2 min 5 s", "compacting: summarizing older messages… 12.3k chars", "■ stopped here", "◦ a notice long enough", "write_file  a.txt  auto-approved  running", "edit_file  b.py  needs approval", "email_send  a@b.c · Hi  auto-approved (this run)  done"] {
             assert!(quiet.iter().any(|l| l.contains(want)), "{want:?} in {quiet:#?}");
