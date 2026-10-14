@@ -29,6 +29,7 @@ DEFAULT_SETTINGS = {
     "api_key": "llama",
     "model": "",
     "max_steps": 30,       # rounds of tool use per message; 0 = no limit
+    "parallel_subagents": 0,  # subagents that may run at once; 0 = automatic (llama-server's slots, else 1)
     "shell_timeout": 180,  # seconds a shell command may run; 0 = no limit
     "auto_compact": True,
     "compact_at": 70,      # % of the context window at which older messages get summarized
@@ -279,7 +280,7 @@ def search_chats(query: str, limit: int = 40) -> list[dict]:
 def seed_defaults() -> None:
     """Install starter agents: all of them on first run, and later only ones added in newer
     versions. Agents the user deleted are not brought back (settings["seeded_agents"])."""
-    from .defaults import DEFAULT_AGENTS
+    from .defaults import ADDED_TOOLS, DEFAULT_AGENTS
     raw = _read(SETTINGS, {}) or {}
     existing = {p.stem for p in AGENTS.glob("*.json")} if AGENTS.exists() else set()
     seeded = raw.get("seeded_agents")
@@ -291,4 +292,13 @@ def seed_defaults() -> None:
             if agent["id"] not in existing:
                 save_agent(agent)
             seeded.append(agent["id"])
-    _write(SETTINGS, raw | {"seeded_agents": seeded})
+    added = list(raw.get("added_tools") or [])
+    for tool, ids in ADDED_TOOLS.items():
+        if tool in added:
+            continue
+        for agent_id in ids:
+            agent = get_agent(agent_id)
+            if agent and tool not in agent["tools"]:
+                save_agent(agent | {"tools": agent["tools"] + [tool]})
+        added.append(tool)
+    _write(SETTINGS, raw | {"seeded_agents": seeded, "added_tools": added})

@@ -318,6 +318,11 @@
           <input name="shell_timeout" type="number" min="0" step="30">
         </label>
       </div>
+      <div class="row">
+        <label class="grow"><span>Subagents at once <span class="hint">How many subagents an agent may run side by side. 0 = automatic: as many requests as llama-server serves at once (its -np), 1 for other servers.</span></span>
+          <input name="parallel_subagents" type="number" min="0" max="16">
+        </label>
+      </div>
       <label class="check"><input type="checkbox" name="auto_title"> Let the model name each chat after its first reply</label>
       <label class="check"><input type="checkbox" name="auto_memory"> After each reply, let the model save new things it learned about you</label>
       <label class="check danger-check"><input type="checkbox" name="bypass_approvals"> Bypass permissions: run shell commands and send email without asking me</label>

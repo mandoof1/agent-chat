@@ -20,6 +20,12 @@ When one agent asks another, the conversation between that pair lives in its own
 (a "sub-chat", owned by the agent being asked, with chat["parent"] pointing back). While
 the sub-agent works, that sub-chat is a live *view* of the run: it receives the run's
 events for its path, re-based so the sub-chat page renders them like any other chat.
+
+A subagent (the subagent tool) is a throwaway copy of the calling agent: its prompt and tools
+(minus subagent), a fresh context, one task, a report back. Its work lives in a sub-chat of its
+own (chat["parent"]["subagent"]), shown nested like a handoff. Several subagent calls in one reply
+run side by side, as many at once as the model server serves (Run.parallel), so more than one
+view can be live at a time.
 """
 
 import asyncio
@@ -97,6 +103,7 @@ class Run:
         self.chat = chat
         self.base = len(chat["messages"])  # messages before this index existed when the run started
         self.approvals: dict[str, asyncio.Future] = {}
+        self.approval_paths: dict[str, tuple] = {}  # approval id -> the path of the agent that asked
         self.task: asyncio.Task | None = None
         self.stack = [View(self, chat, [], self.base)]  # active views, root first, deepest last
         self.n_ctx: int | None = None
@@ -105,6 +112,7 @@ class Run:
         self.turn = self.base  # like base, for the newest turn (queued messages can start one)
         self.auto_approve = False  # the user chose "approve everything for the rest of this run"
         self.llama = True  # the model server is llama-server (per-token timings available)
+        self.slots = 1  # requests the model server serves at once (llama-server's -np)
         views[chat["id"]] = self.stack[0]
 
     def emit(self, type_: str, **data) -> None:
@@ -172,12 +180,13 @@ class Run:
         return True
 
     def status_of(self, chat_id: str) -> str:
-        for i, view in enumerate(self.stack):
-            if view.chat["id"] == chat_id:
-                if i < len(self.stack) - 1:
-                    return "delegated"
-                return "waiting" if self.approvals else "running"
-        return "idle"
+        view = next((v for v in self.stack if v.chat["id"] == chat_id), None)
+        if view is None:
+            return "idle"
+        n = len(view.path)
+        if any(len(v.path) > n and v.path[:n] == view.path for v in self.stack):
+            return "delegated"  # another agent works for it (subagents: maybe several)
+        return "waiting" if view.path in self.approval_paths.values() else "running"
 
     def publish(self) -> None:
         for view in self.stack:
@@ -188,8 +197,21 @@ class Run:
             settings = store.get_settings()
             info = await llm.server_info(client, settings)
             self.llama = info.get("kind") == "llama"
+            self.slots = max(1, int(info.get("slots") or 1))
             self.n_ctx = info.get("n_ctx") or int(settings.get("context_size") or 0) or None
         return self.n_ctx
+
+    async def parallel(self) -> int:
+        """How many subagents may run at once: the setting, or by default as many requests as the
+        model server serves at once (llama-server's slots; 1 for other servers, which don't say)."""
+        try:
+            n = int(store.get_settings().get("parallel_subagents") or 0)
+        except (TypeError, ValueError):
+            n = 0
+        if n > 0:
+            return n
+        await self.context_size()
+        return self.slots
 
     async def ask_approval(self, path: list, call_id: str, name: str, args: dict) -> bool:
         if store.get_settings().get("bypass_approvals") or self.auto_approve:  # approvals switched off
@@ -199,12 +221,14 @@ class Run:
         approval_id = store.new_id()
         fut = asyncio.get_running_loop().create_future()
         self.approvals[approval_id] = fut
+        self.approval_paths[approval_id] = tuple(path)
         self.emit("approval", path=path, approval_id=approval_id, call_id=call_id, name=name, args=args)
         self.publish()
         try:
             approved, everything = await fut
         finally:
             self.approvals.pop(approval_id, None)
+            self.approval_paths.pop(approval_id, None)
         if approved and everything:
             self.auto_approve = True
         self.emit("approval_done", path=path, approval_id=approval_id, call_id=call_id, approved=approved,
@@ -228,6 +252,11 @@ def add_user_message(chat: dict, agent: dict, content: str, images: list[str] | 
             first_line = content.splitlines()[0]
             chat["title"] = first_line[:60] + ("…" if len(first_line) > 60 else "")
             chat["title_auto"] = True  # the model may give it a better name after the first reply
+
+
+def is_subagent(chat: dict) -> bool:
+    """Is this chat a subagent's (started with the subagent tool)?"""
+    return bool((chat.get("parent") or {}).get("subagent"))
 
 
 def contactable(agent: dict, chain: list[str]) -> list[dict]:
@@ -275,7 +304,15 @@ def system_prompt(agent: dict, caller: dict | None, contacts: list[dict], chat: 
                    "asks you to remember something, save it with the remember tool. If a memory is wrong or out of "
                    "date, forget it and remember the corrected fact. Messages may carry extra memories that look "
                    "relevant, marked [From your memory of the user].")
-    if caller:
+    if is_subagent(chat):
+        ctx.append(f"You are working as a subagent: another instance of you, the {agent['name']} agent, started you "
+                   "with a fresh, empty context to do one task, and it is waiting for your result. You can't see "
+                   "its conversation or ask it anything: the task is all you know, so where something is unclear, "
+                   "make a sensible choice and say which. Work through the task on your own with your tools. Then "
+                   "end with a final message that reports what you found or did. It is all the other instance "
+                   "gets back, so make it complete but concise: the facts, file paths and results, and anything "
+                   "left open.")
+    elif caller:
         ctx.append(f"You are working on a request from the {caller['name']} agent. It only sees your final "
                    "message, so make that a complete answer or report. If you need information from it to do "
                    "the job well, don't guess: end your turn with a clear question. It will reply, and you "
@@ -335,7 +372,8 @@ def show_context(run: "Run", chat: dict, path: list, tokens: int) -> None:
     run.emit("ctx", path=path, tokens=tokens)
 
 
-def agent_tools(agent: dict, contacts: list[dict]) -> list[dict]:
+def agent_tools(agent: dict, contacts: list[dict], subagent: bool = False) -> list[dict]:
+    """The tool schemas offered to `agent` (`subagent`: it runs as one, so it can't start more)."""
     schemas = [tools.SCHEMAS[t] for t in agent["tools"] if t in tools.SCHEMAS]
     schemas += [mail.SCHEMAS[t] for t in agent["tools"] if t in mail.SCHEMAS]
     schemas += [agenda.SCHEMAS[t] for t in agent["tools"] if t in agenda.SCHEMAS]
@@ -345,6 +383,8 @@ def agent_tools(agent: dict, contacts: list[dict]) -> list[dict]:
         schemas += list(memory.SCHEMAS.values())
     if contacts:
         schemas.append(tools.ask_agent_schema([a["name"] for a in contacts]))
+    if "subagent" in agent["tools"] and not subagent:
+        schemas.append(tools.SUBAGENT_SCHEMA)
     return schemas
 
 
@@ -357,7 +397,7 @@ async def agent_loop(run: Run, agent: dict, chat: dict, *, depth: int, path: lis
     messages = chat["messages"]
     contacts = contactable(agent, chain)
     await mcp.prepare(agent, lambda text: run.emit("notice", path=path, text=text))
-    schemas = agent_tools(agent, contacts)
+    schemas = agent_tools(agent, contacts, subagent=is_subagent(chat))
     system = lambda: {"role": "system", "content": system_prompt(agent, caller, contacts, chat)}
     user_label = f"REQUEST FROM {caller['name'].upper()}" if caller else "USER"
     save = lambda: store.save_chat(chat)
@@ -476,17 +516,8 @@ async def agent_loop(run: Run, agent: dict, chat: dict, *, depth: int, path: lis
             return answer
         partial.clear()
 
-        for tc in msg["tool_calls"]:
-            result, sub = await execute_tool(run, agent, tc, depth=depth, path=path, chain=chain)
-            result = history.fit_output(result, chat, await run.context_size())
-            tool_msg = {"role": "tool", "tool_call_id": tc["id"], "content": result}
-            if sub:
-                tool_msg["_sub"] = sub
-            if tc["id"] in run.bypassed:  # the reason too, so a saved chat still says "(this run)"
-                tool_msg.update(_bypassed=True, _bypass_reason=run.bypassed[tc["id"]])
-            messages.append(tool_msg)
-            save()
-            run.emit("tool_result", path=path, call_id=tc["id"], content=result)
+        for batch in tool_batches(msg["tool_calls"]):
+            await run_tools(run, agent, chat, batch, depth=depth, path=path, chain=chain, save=save)
 
     run.emit("notice", path=path, text=f"Stopped after {settings.get('max_steps')} steps without a final answer. "
                                         "Raise “Max steps per turn” in Settings to let agents work longer.")
@@ -586,7 +617,72 @@ def is_image_error(err: Exception) -> bool:
     return any(w in text for w in ("image", "multimodal", "mmproj", "vision", "content must be a string"))
 
 
-async def execute_tool(run: Run, agent: dict, tc: dict, *, depth: int, path: list, chain: list[str]):
+def tool_batches(calls: list[dict]) -> list[list[dict]]:
+    """An assistant message's tool calls in the order they run: subagent calls next to each other
+    together (they run side by side), every other call on its own."""
+    out: list[list[dict]] = []
+    for tc in calls:
+        if out and tc["function"]["name"] == "subagent" == out[-1][0]["function"]["name"]:
+            out[-1].append(tc)
+        else:
+            out.append([tc])
+    return out
+
+
+async def run_tools(run: Run, agent: dict, chat: dict, batch: list[dict], *, depth: int, path: list,
+                    chain: list[str], save) -> None:
+    """Run a batch of tool calls (tool_batches) and add their results to the chat in call order:
+    chat templates that don't pair results with call ids by name (Qwen's) go by position. Each
+    result shows as soon as its call finishes."""
+    messages = chat["messages"]
+    in_sub = is_subagent(chat)
+    done: dict[str, tuple[str, dict | None]] = {}
+    added = 0
+
+    def add(tc: dict, result: str, sub: dict | None) -> None:
+        tool_msg = {"role": "tool", "tool_call_id": tc["id"], "content": result}
+        if sub:
+            tool_msg["_sub"] = sub
+        if tc["id"] in run.bypassed:  # the reason too, so a saved chat still says "(this run)"
+            tool_msg.update(_bypassed=True, _bypass_reason=run.bypassed[tc["id"]])
+        messages.append(tool_msg)
+
+    async def one(tc: dict, limit: asyncio.Semaphore | None) -> None:
+        nonlocal added
+        if limit is None:
+            result, sub = await execute_tool(run, agent, tc, depth=depth, path=path, chain=chain, in_subagent=in_sub)
+        else:
+            try:
+                async with limit:
+                    result, sub = await execute_tool(run, agent, tc, depth=depth, path=path, chain=chain,
+                                                     in_subagent=in_sub)
+            except Exception as e:  # one subagent's failure doesn't stop the others
+                log.exception("subagent call %s failed", tc["id"])
+                result, sub = f"Error: {type(e).__name__}: {e}", None
+        done[tc["id"]] = (history.fit_output(result, chat, await run.context_size()), sub)
+        while added < len(batch) and batch[added]["id"] in done:  # the results in order, as far as they go
+            add(batch[added], *done[batch[added]["id"]])
+            added += 1
+        save()
+        run.emit("tool_result", path=path, call_id=tc["id"], content=done[tc["id"]][0])
+
+    try:
+        if len(batch) == 1:
+            await one(batch[0], None)
+        else:
+            limit = asyncio.Semaphore(await run.parallel())
+            async with asyncio.TaskGroup() as group:
+                for tc in batch:
+                    group.create_task(one(tc, limit))
+    finally:
+        # stopped part way: the finished results, the rest marked cancelled, in call order (saved by
+        # whoever ends the run: a chat deleted meanwhile must stay deleted)
+        for tc in batch[added:]:
+            add(tc, *done.get(tc["id"], (history.CANCELLED, None)))
+
+
+async def execute_tool(run: Run, agent: dict, tc: dict, *, depth: int, path: list, chain: list[str],
+                       in_subagent: bool = False):
     name = tc["function"]["name"]
     raw = tc["function"]["arguments"]
     try:
@@ -616,6 +712,11 @@ async def execute_tool(run: Run, agent: dict, tc: dict, *, depth: int, path: lis
 
     if name == "ask_agent":
         return await delegate(run, agent, args, depth=depth, path=path + [tc["id"]], chain=chain)
+
+    if name == "subagent":
+        if in_subagent:
+            return "Error: a subagent can't start subagents of its own. Do this part yourself.", None
+        return await spawn(run, agent, args, depth=depth, path=path + [tc["id"]], chain=chain)
 
     if name == "run_shell" and agent["confirm_shell"]:
         if not await run.ask_approval(path, tc["id"], name, args):
@@ -716,6 +817,52 @@ async def delegate(run: Run, parent: dict, args: dict, *, depth: int, path: list
     run.emit("subagent_end", path=path, agent_id=target["id"])
     info = {"agent_id": target["id"], "chat_id": sub["id"], "messages": msgs[start:], "continued": start > 0}
     return answer or "(the agent returned an empty answer)", info
+
+
+async def spawn(run: Run, agent: dict, args: dict, *, depth: int, path: list, chain: list[str]):
+    """Give one task to a subagent: a fresh copy of `agent` (its prompt and tools, minus subagent)
+    with an empty context. Its work is kept in a sub-chat of its own, like a handoff's; its final
+    message is the result. A model error ends the subagent, not the caller's turn."""
+    task = str(args.get("task") or args.get("prompt") or args.get("message") or "").strip()
+    if not task:
+        return "Error: 'task' is required: the whole task, with every detail the subagent needs.", None
+    if len(chain) > MAX_DEPTH:
+        return "Error: too many agents deep to start a subagent. Do this part yourself.", None
+    label = " ".join(str(args.get("description") or "").split())[:80] or task.splitlines()[0][:60]
+
+    root = run.chat
+    sub = store.create_chat(agent["id"])
+    sub["parent"] = {"root_chat_id": root["id"], "caller_id": agent["id"], "subagent": True}
+    sub["title"] = label
+    msgs = sub["messages"]
+    if agent["memory"]:
+        sub["memory_profile"] = memory.profile()
+    msgs.append({"role": "user", "content": task, "_turn": run.turn, "_ts": time.time(),
+                 "_recall": memory.recall_block(task, sub["memory_profile"]["ids"]) if agent["memory"] else ""})
+    root.setdefault("subchats", []).append(sub["id"])
+    store.save_chat(sub)
+    store.save_chat(root)
+    broadcast({"type": "chats_changed"})
+
+    run.emit("subagent_start", path=path, agent_id=agent["id"], chat_id=sub["id"], continued=False,
+             subagent=True, description=label)
+    view = View(run, sub, path, 0)
+    run.push(view)
+    try:
+        answer = await agent_loop(run, agent, sub, depth=depth + 1, path=path, caller=agent,
+                                  chain=chain + [agent["id"]])
+    except llm.LLMError as e:
+        msgs.append({"role": "assistant", "content": "", "_error": str(e)})
+        run.emit("notice", path=path, text=f"The subagent stopped with an error: {e}")
+        answer = f"Error: the subagent stopped with an error before it finished: {e}"
+    finally:
+        repair(msgs)
+        store.save_chat(sub)
+        run.pop(view)
+    run.emit("subagent_end", path=path, agent_id=agent["id"])
+    info = {"agent_id": agent["id"], "chat_id": sub["id"], "messages": msgs[:], "continued": False,
+            "subagent": True, "description": label}
+    return answer or "(the subagent returned an empty answer)", info
 
 
 # ------------------------------------------------------------ run control

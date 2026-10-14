@@ -207,8 +207,14 @@ def scratch():
 OPEN = []  # the TUIs a section started, closed when it ends
 
 
-def new_xdg():
-    return tempfile.mkdtemp(prefix="xdg-", dir=WORK)
+def new_xdg(thinking=False):
+    """A config folder of its own, its state.json saying whether thinking shows (the sections were
+    written for it hidden; it shows by default)."""
+    xdg = tempfile.mkdtemp(prefix="xdg-", dir=WORK)
+    os.makedirs(os.path.join(xdg, "agent-chat-tui"))
+    with open(os.path.join(xdg, "agent-chat-tui", "state.json"), "w") as f:
+        json.dump({"thinking": thinking}, f)
+    return xdg
 
 
 def state_of(xdg):
@@ -561,7 +567,7 @@ def s_bell():
 
 @sect
 def s_persist():
-    section("state.json: made with its folder, written on every toggle (verbose, sidebar, drawer, filter, seen), restored on the next start; a broken one falls back to defaults")
+    section("state.json: made with its folder, written on every toggle (thinking, verbose, sidebar, drawer, filter, seen), restored on the next start; a broken one falls back to defaults")
     title = f"Persist {STAMP}"
     seed(title, ["hello there"])
     xdg = os.path.join(new_xdg(), "not", "made", "yet")
@@ -569,6 +575,9 @@ def s_persist():
     expect(t, "Pick an agent.")
     until(lambda: state_of(xdg) is not None, 5, t, "state.json to be written at the first start")
     assert state_of(xdg)["seen"], "the first start marks every chat seen"
+    assert state_of(xdg)["thinking"] is True, "thinking shows by default"
+    t.key("alt-t")
+    until(lambda: state_of(xdg)["thinking"] is False, 3, t, "thinking hidden in state.json")
     t.key("alt-o")
     until(lambda: state_of(xdg)["verbose"] is True, 3, t, "verbose in state.json")
     t.key("alt-f", 0.8)
@@ -2078,7 +2087,7 @@ def s_settings():
         t.key("esc", 0.5)
         # text keys on the search engine URL (not saved)
         t.key("alt-s", 1.0)
-        for _ in range(11):
+        for _ in range(12):
             t.key("tab", 0.1)
         assert focused_label(t, "Search engine URL")
         t.key("ctrl-u")
@@ -2101,7 +2110,7 @@ def s_settings():
         assert api("GET", "/api/state")["settings"].get("search_url") == keep.get("search_url")
         # Bypass in amber once on
         t.key("alt-s", 1.0)
-        for _ in range(10):
+        for _ in range(11):
             t.key("tab", 0.1)
         assert focused_label(t, "Bypass permissions")
         absent(t, "[x] Bypass permissions")
@@ -2804,7 +2813,7 @@ def s_dialogs():
     t.key("esc", 0.3)
     absent(t, "Memory ·")
     t.key("alt-s", 1.0)
-    for _ in range(11):
+    for _ in range(12):
         t.key("tab", 0.08)
     t.key("ctrl-u")
     t.paste(MOCK)

@@ -124,7 +124,7 @@ export function renderHeader() {
   av.style.setProperty("--c", a.color || "#7c6cff");
   if ($("#hdr-title").contentEditable !== "true") $("#hdr-title").textContent = S.chat.title;
   const parent = S.chat.parent;
-  $("#hdr-sub").textContent = parent ? `${a.name} · working for ${agentById(parent.caller_id).name}`
+  $("#hdr-sub").textContent = parent ? `${a.name} · ${parent.subagent ? "subagent" : `working for ${agentById(parent.caller_id).name}`}`
     : a.purpose ? `${a.name} · ${a.purpose}` : a.name;
   $("#hdr-compact").hidden = !!parent;
   applyChatMode(parent);
@@ -281,6 +281,7 @@ function argBlocks(name, a) {
     return [[name === "email_send" ? "Email" : "Draft", `${head}${a.body !== undefined ? `\n\n${a.body}` : ""}`, null]];
   }
   if (name === "ask_agent") return [[`Message to ${a.agent ?? "…"}`, a.message ?? a.task, null]];
+  if (name === "subagent") return [[`Task: ${a.description ?? "…"}`, a.task, null]];
   return null;
 }
 
@@ -339,6 +340,7 @@ function argSummary(name, a) {
     case "read_file": return a.start_line ? `${a.path}:${a.start_line}-${a.end_line ?? ""}` : a.path;
     case "find_tools": return a.query ? `“${a.query}”` : "all tools";
     case "call_tool": return `${a.tool} ${oneLine(JSON.stringify(a.arguments ?? {}), 80)}`;
+    case "subagent": return a.description || oneLine(a.task);
     default: return a.path ?? oneLine(JSON.stringify(a));
   }
 }
@@ -377,8 +379,10 @@ function resultView(name, args, text) {
   return [el("div", { class: "t-label" }, "Result"), el("pre", {}, text)];
 }
 
-function toolCard(name, args, live) {
-  const isAsk = name === "ask_agent";
+// `owner`: the agent whose trace the card is in (a subagent is a copy of it).
+function toolCard(name, args, live, owner = null) {
+  const isSub = name === "subagent";
+  const isAsk = name === "ask_agent" || isSub;
   const state = el("span", { class: "t-state" + (live ? " run" : "") }, live ? "running" : "");
   const summary = el("summary");
   const body = el("div", { class: "t-body" });
@@ -387,7 +391,15 @@ function toolCard(name, args, live) {
   let approvalBox = null;
   let liveOut = null;
 
-  if (isAsk) {
+  if (isSub) {
+    const text = args.task ?? args.message ?? "";
+    card.style.setProperty("--c", owner?.color || "#7c6cff");
+    summary.append(el("span", { class: "patch" }, svgIcon("branch"), "subagent"), el("span", { class: "t-name" }, args.description || "task"),
+      el("span", { class: "t-arg" }, oneLine(text)), state);
+    subBody = el("div", { class: "sub-body" });
+    body.append(el("div", { class: "t-label" }, "Task"), el("div", { class: "sub-task" }, text), subBody);
+    if (live || S.verbose) card.open = true;
+  } else if (isAsk) {
     const target = agentByName(args.agent);
     const text = args.message ?? args.task ?? "";
     card.style.setProperty("--c", target.color || "#7c6cff");
@@ -407,11 +419,13 @@ function toolCard(name, args, live) {
     el: card, subBody, name,
     setChat(chatId) {
       if (!subBody || !chatId || card.querySelector(".open-sub")) return;
-      const target = agentByName(args.agent);
       subBody.before(el("button", {
         class: "btn ghost sm open-sub", type: "button",
         onclick: (e) => { e.preventDefault(); openChat(chatId); },
-      }, `Open ${target.name}'s chat`, svgIcon("arrow")));
+      }, isSub ? "Open the subagent's chat" : `Open ${agentByName(args.agent).name}'s chat`, svgIcon("arrow")));
+    },
+    setAgent(agentId) {  // a subagent's: the color of the agent it is a copy of
+      if (isSub) card.style.setProperty("--c", agentById(agentId).color || "#7c6cff");
     },
     setContinued() {
       if (!subBody || card.querySelector(".continued")) return;
@@ -533,6 +547,7 @@ function appendAssistant(container, m, results, index) {
     try { args = JSON.parse(tc.function.arguments || "{}"); } catch { args = { _raw: tc.function.arguments }; }
     const card = toolCard(tc.function.name, args, false);
     const res = results.get(tc.id);
+    if (res?._sub) card.setAgent(res._sub.agent_id);
     if (res?._bypassed) card.markBypassed(res._bypass_reason);
     if (res?._cleared || m._cleared_args?.[tc.id]) card.markCleared();  // its output, or a written file's content
     if (res?._sub && card.subBody) {
@@ -654,7 +669,7 @@ export function userBubble(m, index, from = null) {
       actions.append(iconBtn("branch", "Branch from here: a new chat with the conversation up to this message", () => forkChat(index + 1)));
     }
     const who = el("div", { class: "who" },
-      from ? el("span", { class: "from" }, avatar(from, "xs"), `${from.name} asked`) : "You",
+      from ? el("span", { class: "from" }, avatar(from, "xs"), S.chat?.parent?.subagent ? `Task from ${from.name}` : `${from.name} asked`) : "You",
       m._ts ? el("span", { class: "when" }, clock(m._ts)) : null,
       m._queued ? el("span", { class: "queued-tag", title: "You sent this while the agent was working; it read it at its next step" }, "· sent while it worked") : null,
       actions);
@@ -852,7 +867,7 @@ function liveUserMessage(ev) {
 function liveToolStart(ev) {
   const c = liveContainer(ev.path);
   if (!c) return;
-  const card = toolCard(ev.name, ev.args || {}, true);
+  const card = toolCard(ev.name, ev.args || {}, true, ev.path?.length ? null : agentById(S.chat?.agent_id));
   const draft = c.drafts?.shift();
   if (draft?.el.isConnected) draft.el.replaceWith(card.el);
   else c.body.append(card.el);
@@ -906,6 +921,7 @@ export function handleEvent(ev) {
     }
     case "subagent_start": {
       const card = S.live?.cards.get(ev.path.at(-1));
+      card?.setAgent(ev.agent_id);
       if (ev.continued) card?.setContinued();
       card?.setChat(ev.chat_id);
       break;

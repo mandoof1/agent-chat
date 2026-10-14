@@ -149,8 +149,10 @@ async def stream_chat(
 
 
 async def server_info(client: httpx.AsyncClient, settings: dict) -> dict:
-    """Model list plus, for llama-server, the context size from /props (`kind` says which server it is)."""
-    info = {"ok": False, "models": [], "n_ctx": None, "error": None, "kind": "other", "base_url": _base(settings)}
+    """Model list plus, for llama-server, the context size and slot count from /props (`kind` says which
+    server it is)."""
+    info = {"ok": False, "models": [], "n_ctx": None, "slots": None, "error": None, "kind": "other",
+            "base_url": _base(settings)}
     try:
         r = await client.get(_base(settings) + "/models", headers=_headers(settings), timeout=3)
         r.raise_for_status()
@@ -165,6 +167,7 @@ async def server_info(client: httpx.AsyncClient, settings: dict) -> dict:
         if r.status_code == 200:
             props = r.json()
             info["n_ctx"] = (props.get("default_generation_settings") or {}).get("n_ctx") or props.get("n_ctx")
+            info["slots"] = props.get("total_slots")  # requests it serves at once (-np)
             info["kind"] = "llama"
     except Exception:
         pass

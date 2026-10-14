@@ -275,8 +275,13 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let who = agent_who(&app.agents, &aid);
     let agent = app.agent(&aid);
     let sub = if app.is_subchat() {
-        let caller = chat.and_then(|c| c.get("parent")).and_then(|p| p.get("caller_id")).and_then(|c| c.as_str()).unwrap_or("");
-        format!("{} · working for {}", who.name, agent_who(&app.agents, caller).name)
+        let parent = chat.and_then(|c| c.get("parent"));
+        let caller = parent.and_then(|p| p.get("caller_id")).and_then(|c| c.as_str()).unwrap_or("");
+        if parent.and_then(|p| p.get("subagent")).and_then(|s| s.as_bool()).unwrap_or(false) {
+            format!("{} · subagent", who.name)
+        } else {
+            format!("{} · working for {}", who.name, agent_who(&app.agents, caller).name)
+        }
     } else {
         format!("{}{}", who.name, agent.map(|a| if a.purpose.is_empty() { String::new() } else { format!(" · {}", clean(&a.purpose)) }).unwrap_or_default())
     };
@@ -335,10 +340,10 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
     if width < MIN_TRACE || inner.height == 0 {
         return;
     }
-    let key = (width, app.verbose(), app.dirty);
+    let key = (width, app.verbose(), app.cfg.thinking, app.dirty);
     if app.rendered.is_none() || app.render_key != key {
         // (reusing the settled part of the last render: a token redoes the reply, not the chat)
-        let opts = RenderOpts { theme: &th, width, verbose: app.verbose(), selected_turn: app.selected_turn };
+        let opts = RenderOpts { theme: &th, width, verbose: app.verbose(), thinking: app.cfg.thinking, selected_turn: app.selected_turn };
         app.rendered = Some(trace::render_from(&app.trace, &opts, app.rendered.take()));
         app.render_key = key;
     }
@@ -390,7 +395,8 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect) {
     if app.is_subchat() {
         let caller = app.chat.as_ref().and_then(|c| c.get("parent")).and_then(|p| p.get("root_chat_id")).and_then(|c| c.as_str()).unwrap_or("");
         let root = app.chats.iter().find(|c| c.id == caller).map(|c| c.title.clone()).unwrap_or_else(|| "the original chat".into());
-        let text = format!(" This agent is working for another agent. You can watch here; to reply, open “{}”.", trace::one_line(&root, 40));
+        let what = if app.chat.as_ref().and_then(|c| c.get("parent")).and_then(|p| p.get("subagent")).and_then(|s| s.as_bool()).unwrap_or(false) { "A subagent's chat: one task for another agent" } else { "This agent is working for another agent" };
+        let text = format!(" {what}. You can watch here; to reply, open “{}”.", trace::one_line(&root, 40));
         render(f, Paragraph::new(Line::from(Span::styled(text, Style::default().fg(th.muted)))).wrap(Wrap { trim: true }), area);
         return;
     }
@@ -659,7 +665,7 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
                 ("Enter", "send (queue while the agent works)"), ("Alt+Enter / Ctrl+J", "new line"), ("Ctrl+S / Esc", "stop the agent"),
                 ("↑ in an empty box", "take queued messages back"), ("Ctrl+U", "attach a file"), ("Ctrl+E", "edit and resend your last message"),
                 ("Ctrl+R", "regenerate the last reply / retry after an error"), ("Ctrl+G", "branch from the end"), ("Ctrl+L", "compact older messages"),
-                ("Alt+Y / A / N", "approve · approve all for this run · deny (in the trace: y / a / n)"), ("Alt+O", "show thinking, results and tool details"), ("Alt+F", "workspace files"),
+                ("Alt+Y / A / N", "approve · approve all for this run · deny (in the trace: y / a / n)"), ("Alt+O", "show thinking, results and tool details"), ("Alt+T", "show or hide thinking"), ("Alt+F", "workspace files"),
                 ("Alt+B", "hide or show the sidebar"), ("Alt+M", "memory"), ("Alt+R", "routines"), ("Alt+S", "settings"), ("Alt+A", "edit the agent"),
                 ("Alt+P", "pin or unpin the chat"), ("F2", "rename the chat"), ("Alt+D", "delete the chat"), ("Alt+X", "export as Markdown"),
                 ("Ctrl+Y", "bypass permissions on/off"), ("In the trace: [ ]", "select a reply · c copy · r regenerate · b branch · o open the handoff chat"),

@@ -106,6 +106,9 @@ pub struct Persisted {
     pub seen: HashMap<String, f64>,
     #[serde(default)]
     pub verbose: bool,
+    /// Thinking shown in full (Alt+T); verbose shows it as well.
+    #[serde(default = "t")]
+    pub thinking: bool,
     #[serde(default = "t")]
     pub sidebar: bool,
     #[serde(default)]
@@ -121,7 +124,7 @@ fn t() -> bool {
 }
 impl Default for Persisted {
     fn default() -> Self {
-        Persisted { seen: HashMap::new(), verbose: false, sidebar: true, files: false, filter: String::new(), theme: String::new() }
+        Persisted { seen: HashMap::new(), verbose: false, thinking: true, sidebar: true, files: false, filter: String::new(), theme: String::new() }
     }
 }
 
@@ -207,7 +210,7 @@ pub struct App {
     pub scroll: usize,
     pub follow: bool,
     pub rendered: Option<trace::Rendered>,
-    pub render_key: (usize, bool, u64),
+    pub render_key: (usize, bool, bool, u64),
     pub dirty: u64,
     pub selected_turn: Option<usize>,
     pub composer: TextArea<'static>,
@@ -271,6 +274,7 @@ impl App {
         let cfg: Persisted = std::fs::read_to_string(&cfg_path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         let filter = cfg.filter.clone();
         let verbose = cfg.verbose;
+        let thinking = cfg.thinking;
         let files_shown = cfg.files;
         Self {
             api,
@@ -306,7 +310,7 @@ impl App {
             scroll: 0,
             follow: true,
             rendered: None,
-            render_key: (0, verbose, 0),
+            render_key: (0, verbose, thinking, 0),
             dirty: 1,
             selected_turn: None,
             composer: composer_with(""),
@@ -1106,6 +1110,7 @@ impl App {
             ("New agent", "From a blank sheet", "new-agent"),
             (if self.cfg.files { "Hide workspace files" } else { "Show workspace files" }, "What the agent's file tools can see", "files"),
             (if self.cfg.verbose { "Collapse thinking and tool details" } else { "Show all thinking and tool details" }, "", "verbose"),
+            (if self.cfg.thinking { "Hide thinking" } else { "Show thinking" }, "The agents' thinking, in full · Alt+T", "thinking"),
             (if self.cfg.sidebar { "Hide the sidebar" } else { "Show the sidebar" }, "", "sidebar"),
             (if self.settings.get("bypass_approvals").and_then(|b| b.as_bool()).unwrap_or(false) { "Ask before acting again" } else { "Bypass permissions" }, "Let agents run commands and send email without asking", "bypass"),
             ("Keyboard shortcuts", "", "help"),
@@ -1165,6 +1170,7 @@ impl App {
             }
             "files" => self.toggle_files().await,
             "verbose" => self.toggle_verbose(),
+            "thinking" => self.toggle_thinking(),
             "sidebar" => {
                 self.cfg.sidebar = !self.cfg.sidebar;
                 self.save_cfg();
@@ -1216,6 +1222,18 @@ impl App {
         self.touch();
     }
 
+    pub fn toggle_thinking(&mut self) {
+        self.cfg.thinking = !self.cfg.thinking;
+        self.save_cfg();
+        self.touch();
+        let msg = match (self.cfg.thinking, self.cfg.verbose) {
+            (true, _) => "Showing the agents' thinking in full · Alt+T hides it",
+            (false, true) => "Thinking hidden once you collapse the details (Alt+O)",
+            (false, false) => "Thinking hidden · Alt+T shows it",
+        };
+        self.toast(msg, false);
+    }
+
     pub async fn toggle_files(&mut self) {
         self.cfg.files = !self.cfg.files;
         self.save_cfg();
@@ -1248,6 +1266,7 @@ impl App {
             .text("compact_at", "Compact at % of the context", &g("compact_at"), "30–95")
             .text("max_steps", "Max steps per turn", &g("max_steps"), "0 = no limit")
             .text("shell_timeout", "Shell command timeout (s)", &g("shell_timeout"), "0 = no limit")
+            .text("parallel_subagents", "Subagents at once", &g("parallel_subagents"), "0 = as many as the server serves at once")
             .bool("auto_title", "Let the model name each chat after its first reply", b("auto_title"), "")
             .bool("auto_memory", "Let the model save new things it learned about you", b("auto_memory"), "")
             .bool("bypass_approvals", "Bypass permissions (run commands and send email without asking)", b("bypass_approvals"), "")
@@ -1499,6 +1518,7 @@ impl App {
                         "compact_at": form.json_number("compact_at"),
                         "max_steps": form.json_number("max_steps"),
                         "shell_timeout": form.json_number("shell_timeout"),
+                        "parallel_subagents": form.json_number("parallel_subagents"),
                         "auto_title": form.boolean("auto_title"),
                         "auto_memory": form.boolean("auto_memory"),
                         "bypass_approvals": form.boolean("bypass_approvals"),
@@ -2614,6 +2634,7 @@ impl App {
         }
         match (k.code, ctrl, alt) {
             (KeyCode::Char('o'), _, true) => return self.toggle_verbose(),
+            (KeyCode::Char('t'), _, true) => return self.toggle_thinking(),
             (KeyCode::Char('b'), _, true) | (KeyCode::Char('b'), true, _) => {
                 self.cfg.sidebar = !self.cfg.sidebar;
                 self.save_cfg();
@@ -4194,7 +4215,7 @@ mod tests {
 
     fn lines_of(t: &Trace, verbose: bool) -> Vec<String> {
         let th = Theme::dark();
-        let r = trace::render(t, &trace::RenderOpts { theme: &th, width: 80, verbose, selected_turn: None });
+        let r = trace::render(t, &trace::RenderOpts { theme: &th, width: 80, verbose, thinking: false, selected_turn: None });
         r.lines.iter().map(|l| l.spans.iter().map(|s| s.content.to_string()).collect()).collect()
     }
 

@@ -46,6 +46,7 @@ run routines  uv run python tests/e2e_routines.py
 run v2        uv run python tests/e2e_v2.py
 run calendar  env TEST_ICS="$TMP/test.ics" uv run python tests/e2e_calendar.py
 run mcp       uv run python tests/e2e_mcp.py
+run subagents uv run python tests/e2e_subagents.py
 if [[ $WITH_UI == yes ]]; then
   run browser env PYTHONPATH=. uv run python tests/e2e_browser.py
   run ui      uv run python tests/e2e_ui.py

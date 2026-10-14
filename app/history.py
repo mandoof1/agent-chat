@@ -34,8 +34,9 @@ CLEAR_TO = 0.4                 # ...down to this share of it, in one batch (each
 KEEP_OUTPUTS = 3               # the newest tool outputs are never cleared (as many as fit in KEEP_FRACTION
                                # of the window: three whole-file reads fill an 8k one), nor the current step's
 CLEAR_MIN_CHARS = 1000         # shorter outputs aren't worth a placeholder
-KEPT_TOOLS = {"ask_agent", "remember", "recall_memory", "forget_memory"}  # a teammate's report, memory: kept
+KEPT_TOOLS = {"ask_agent", "subagent", "remember", "recall_memory", "forget_memory"}  # reports, memory: kept
 OUTPUT_FRACTION = 0.25         # most of the context one tool output may take
+CANCELLED = "[cancelled: the user stopped the run]"  # the result of a call a stopped run never finished
 QUEUED_NOTE = ("[The user sent this while you were working. Take it into account, then carry on with "
                "your task unless it says otherwise.]")
 
@@ -66,7 +67,7 @@ def repair(messages: list[dict]) -> None:
         while i < len(messages) and messages[i].get("role") == "tool":
             i += 1
         for tc in missing:
-            messages.insert(i, {"role": "tool", "tool_call_id": tc["id"], "content": "[cancelled: the user stopped the run]"})
+            messages.insert(i, {"role": "tool", "tool_call_id": tc["id"], "content": CANCELLED})
             answered.add(tc["id"])
             i += 1
 

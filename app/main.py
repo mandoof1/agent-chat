@@ -169,6 +169,7 @@ class SettingsIn(In):
     api_key: str | None = None
     model: str | None = None
     max_steps: int | None = None
+    parallel_subagents: int | None = None
     shell_timeout: int | None = None
     auto_compact: bool | None = None
     compact_at: int | None = None

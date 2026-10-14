@@ -11,6 +11,7 @@ Behaviour is keyed off the last user message:
   "which tools"    -> answers with the names of the tools the request offered
   "readloop N"     -> reads notes.txt N times in a row, then answers (tool outputs that pile up)
   "delegate"       -> calls ask_agent(Coder, "shell: echo hello from coder")
+  "delegate: <msg>" -> calls ask_agent(Coder, <msg>)
   "qa"             -> Orchestrator asks Coder to build something; Coder answers with a
                       QUESTION; Orchestrator replies; Coder must remember the original task
   "boss test"      -> Orchestrator asks Coder, which tries to call Orchestrator back (refused)
@@ -19,6 +20,10 @@ Behaviour is keyed off the last user message:
   "cutoff N [crowded|full]" -> the reply fills the context window (finish_reason "length") N
                       times, then answers; "crowded"/"full" report the prompt at 80%/95% of n_ctx
   "delegate cutoff" -> Orchestrator asks Coder "cutoff 2"
+  "subagents N: <task>" -> N subagent calls in one reply ("Part 1"…), each with <task> plus " K"
+                      (default "which tools")
+  "nap K"          -> waits about a second, then answers "Part K done" (subagents running side by side)
+  "explode"        -> the server fails the request (HTTP 500)
   "verbatim: <text>" -> thinks (the start of) <text>, then answers <text> exactly, whatever it holds
                       (escape codes, emoji, markdown); "verbatim slow: <text>" streams it slowly
   a message queued mid-turn -> "Noted your aside: <message>"
@@ -60,7 +65,7 @@ async def models():
 
 @app.get("/props")
 async def props():
-    return {"default_generation_settings": {"n_ctx": NCTX}}
+    return {"default_generation_settings": {"n_ctx": NCTX}, "total_slots": int(os.environ.get("MOCK_SLOTS", "1"))}
 
 
 @app.post("/v1/chat/completions")
@@ -85,6 +90,8 @@ async def completions(request: Request):
     if OVERFLOW_CHARS and len(json.dumps(msgs)) > OVERFLOW_CHARS:
         return JSONResponse({"error": {"code": 400, "type": "exceed_context_size_error",
                              "message": "the request exceeds the available context size, try increasing it"}}, 400)
+    if last["role"] == "user" and str(last.get("content")).startswith("explode"):
+        return JSONResponse({"error": {"code": 500, "message": "mock exploded"}}, 500)
     summarizing = msgs[0]["content"].startswith("You compress conversations")
     extracting = msgs[0]["content"].startswith("You maintain long-term memory")
     titling = msgs[0]["content"].startswith("You name conversations")
@@ -269,9 +276,17 @@ async def completions(request: Request):
                                   'if __name__ == "__main__":', "    main()"])
                 tool = ("write_file", {"path": "greet.py", "content": code})
                 delay = 0.02
+            elif (sa := re.match(r"subagents (\d+)(?:: (.*))?", user.split("\n\n[From your memory")[0], re.S)) and "subagent" in tools:
+                task = sa[2] or "which tools"
+                tool = [("subagent", {"description": f"Part {k}", "task": f"{task} {k}"}) for k in range(1, int(sa[1]) + 1)]
+            elif user.startswith("nap "):
+                await asyncio.sleep(1.2)
+                text = f"Part {user.split()[1]} done."
+            elif user.startswith("delegate: ") and "ask_agent" in tools:
+                tool = ("ask_agent", {"agent": "Coder", "message": user[len("delegate: "):].split("\n\n[From your memory")[0]})
             elif "delegate" in user and "ask_agent" in tools:
                 tool = ("ask_agent", {"agent": "Coder", "message": "shell: echo hello from coder"})
-            elif user == "which tools":
+            elif user.startswith("which tools"):
                 text = "Tools: " + ", ".join(sorted(tools))
             elif user.startswith("think long"):
                 reasoning = "\n".join(f"Step {i}: considering option {i} carefully before answering." for i in range(120))
@@ -291,12 +306,11 @@ async def completions(request: Request):
         for p in pieces(text):
             yield token({"content": p})
             await asyncio.sleep(delay)
-        if tool:
-            args = json.dumps(tool[1])
-            yield chunk({"tool_calls": [{"index": 0, "id": f"call_{int(time.time()*1000)}", "type": "function",
-                                         "function": {"name": tool[0], "arguments": ""}}]})
-            for p in pieces(args, 10):
-                yield token({"tool_calls": [{"index": 0, "function": {"arguments": p}}]})
+        for k, (name, call_args) in enumerate([tool] if isinstance(tool, tuple) else tool or []):
+            yield chunk({"tool_calls": [{"index": k, "id": f"call_{int(time.time()*1000)}_{k}", "type": "function",
+                                         "function": {"name": name, "arguments": ""}}]})
+            for p in pieces(json.dumps(call_args), 10):
+                yield token({"tool_calls": [{"index": k, "function": {"arguments": p}}]})
                 await asyncio.sleep(delay)
         yield chunk({}, finish=finish or ("tool_calls" if tool else "stop"))
         yield chunk(None, usage={"prompt_tokens": reported, "completion_tokens": completion, "total_tokens": reported + completion},
