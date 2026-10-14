@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.3.4 — 2026-10-15
+
+How long each tool runs, in both clients, and selecting and copying with the mouse in the
+terminal client.
 
 ### How long a tool runs
 - A running tool or shell command shows how long it has been going, counting up, in both

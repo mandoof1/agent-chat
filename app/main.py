@@ -21,7 +21,7 @@ from pydantic import BaseModel, model_validator
 from . import agenda, browser, llm, mail, mcp, memory, routines, runner, store, tools
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
-VERSION = "0.3.3"
+VERSION = "0.3.4"
 mcp.client_version = VERSION
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 

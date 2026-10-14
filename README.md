@@ -71,7 +71,7 @@ you don't have it. On Linux and macOS, x86_64 or ARM, it downloads the terminal 
 web UI. On Windows, use WSL. To read the script first:
 `curl -fsSL https://agent-chat-i4sv.onrender.com/install.sh -o install.sh`.
 
-Put options after the pipe (`… | AGENT_CHAT_NO_TUI=1 bash`): `AGENT_CHAT_VERSION=0.3.3`
+Put options after the pipe (`… | AGENT_CHAT_NO_TUI=1 bash`): `AGENT_CHAT_VERSION=0.3.4`
 installs that release, `AGENT_CHAT_NO_TUI=1` skips the terminal client, `AGENT_CHAT_BUILD_TUI=1`
 builds it with cargo even where a prebuilt one exists, and `AGENT_CHAT_HOME` /
 `AGENT_CHAT_BIN` move the install. The script's header lists the rest.
