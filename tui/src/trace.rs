@@ -14,6 +14,18 @@ use serde_json::Value;
 /// "notice" event, app/runner.py), so a chat reads the same live and once it is reloaded.
 pub const CUT_OFF: &str = "The reply filled the context window before it finished. Continuing from where it stopped…";
 
+/// Under a reply the loop guard stopped (`_looped`, app/loops.py): what the run said.
+pub fn looped_notice(info: &Value) -> String {
+    let what = if info.get("channel").and_then(|c| c.as_str()) == Some("content") { "answer" } else { "thinking" };
+    let n = info.get("repeats").and_then(|n| n.as_u64()).unwrap_or(0);
+    format!("Loop guard: the {what} kept repeating the same passage ({n} times), so the reply was stopped and the agent was told to move on.")
+}
+
+/// After a tool result the loop guard flagged (`_repeat`): the same call, the same result, n times.
+pub fn repeat_notice(name: &str, n: u64) -> String {
+    format!("Loop guard: the same {name} call returned the same result {n} times. The agent was told that repeating it changes nothing.")
+}
+
 #[derive(Clone, Debug)]
 pub struct Who {
     pub id: String,
@@ -291,6 +303,9 @@ fn append_assistant(steps: &mut Vec<Step>, m: &Value, results: &std::collections
     if m.get("_truncated").and_then(|x| x.as_bool()).unwrap_or(false) {
         steps.push(Step::Notice(CUT_OFF.into()));
     }
+    if let Some(info) = m.get("_looped").filter(|i| i.is_object()) {
+        steps.push(Step::Notice(looped_notice(info)));
+    }
     for tc in m.get("tool_calls").and_then(|t| t.as_array()).cloned().unwrap_or_default() {
         let id = s(&tc, "id");
         let name = tc.get("function").map(|f| s(f, "name")).unwrap_or_default();
@@ -328,7 +343,11 @@ fn append_assistant(steps: &mut Vec<Step>, m: &Value, results: &std::collections
         } else {
             tool.state = ToolState::Failed("cancelled".into());
         }
+        let repeat = results.get(&id).and_then(|r| r.get("_repeat")).and_then(|n| n.as_u64());
         steps.push(Step::Tool(tool));
+        if let Some(n) = repeat {
+            steps.push(Step::Notice(repeat_notice(&name, n)));
+        }
     }
 }
 
@@ -1357,6 +1376,23 @@ mod tests {
         assert_eq!(count(&hidden), 0);
         assert!(hidden.iter().any(|l| l.ends_with("thought for 3 s  (Alt+T to show)")), "{hidden:?}");
         assert_eq!(count(&texts(&render(&t, &opts(&th, 60, true)))), 40, "verbose shows it too");
+    }
+
+    #[test]
+    fn loop_guard_notices_show_in_a_saved_chat() {
+        let ag = agents();
+        let th = Theme::dark();
+        let chat = json!({ "agent_id": "coder", "messages": [
+            { "role": "user", "content": "go" },
+            { "role": "assistant", "content": "", "reasoning_content": "plan plan", "_looped": { "channel": "reasoning", "repeats": 5, "keep": 5, "period": 5 } },
+            { "role": "assistant", "content": "", "tool_calls": [{ "id": "a", "function": { "name": "list_dir", "arguments": "{}" } }] },
+            { "role": "tool", "tool_call_id": "a", "content": "x", "_repeat": 3 },
+            { "role": "assistant", "content": "ok" }
+        ] });
+        let lines = texts(&render(&Trace::from_chat(&chat, &ag, None), &opts(&th, 240, false)));
+        assert!(lines.iter().any(|l| l.contains("Loop guard: the thinking kept repeating the same passage (5 times)")), "{lines:?}");
+        assert!(lines.iter().any(|l| l.contains("Loop guard: the same list_dir call returned the same result 3 times")), "{lines:?}");
+        assert_eq!(looped_notice(&json!({ "channel": "content", "repeats": 4 })).split(" kept").next(), Some("Loop guard: the answer"));
     }
 
     #[test]

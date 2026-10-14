@@ -325,6 +325,7 @@
       </div>
       <label class="check"><input type="checkbox" name="auto_title"> Let the model name each chat after its first reply</label>
       <label class="check"><input type="checkbox" name="auto_memory"> After each reply, let the model save new things it learned about you</label>
+      <label class="check"><input type="checkbox" name="loop_guard"> Loop guard: stop a reply that keeps repeating itself, and warn an agent that repeats the same tool call to no effect</label>
       <label class="check danger-check"><input type="checkbox" name="bypass_approvals"> Bypass permissions: run shell commands and send email without asking me</label>
       <p class="hint">Anything an agent reads (web pages, emails) could try to trick it. Only bypass permissions when you trust the task.</p>
     </section>

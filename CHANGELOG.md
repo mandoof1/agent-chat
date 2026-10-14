@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Loop guard
+- A reply that keeps writing the same passage is stopped while it streams: once the newest 200
+  characters of its thinking or answer have appeared three times over at least 2,000
+  characters. The model gets the reply up to the loop, with the passage once, and is told to
+  act on it rather than write it again. Three such replies in a row end the turn with an error.
+  Length alone never stops a reply. Replayed over 305 long replies from real Qwen chats, it
+  stopped 12, each repeating long passages word for word (the worst had thought one plan out 19
+  times, 115K characters, before it was stopped by hand), and none of the others.
+- The same tool call returning the same result a third time in one task gets a note in its
+  result saying that repeating it changes nothing; the fifth ends the turn. Outputs cleared to
+  save context don't count.
+- Both clients show what the guard did, live and in saved chats. Settings → Loop guard turns it
+  off (the terminal client's Settings form has the same switch).
+
 ### Subagents
 - A new `subagent` tool lets an agent hand one self-contained task to a fresh copy of itself:
   same instructions and tools, an empty context, a report back. Searching a codebase, reading

@@ -38,7 +38,7 @@ from datetime import date
 
 import httpx
 
-from . import agenda, browser, history, llm, mail, mcp, memory, store, tools
+from . import agenda, browser, history, llm, loops, mail, mcp, memory, store, tools
 from .history import repair
 
 MAX_DEPTH = 3
@@ -444,14 +444,14 @@ async def agent_loop(run: Run, agent: dict, chat: dict, *, depth: int, path: lis
         return after
 
     max_steps = max(0, int(settings.get("max_steps", 30) or 0))  # 0 = no limit
-    step = cutoffs = 0
+    step = cutoffs = looped = 0
     partial: list[str] = []  # answer text from replies that were cut off, joined into the final answer
     while not max_steps or step < max_steps:
         step += 1
         repair(messages)
         # Messages the user queued meanwhile go in now, between the tool results and the next
-        # request. Not right after a cut-off reply: its continuation note must come next.
-        if not depth and step > 1 and not messages[-1].get("_truncated"):
+        # request. Not right after a cut-off or looping reply: its continuation note must come next.
+        if not depth and step > 1 and not (messages[-1].get("_truncated") or messages[-1].get("_looped")):
             run.deliver(agent, midturn=True)
         tokens = report_context()  # tool results and queued messages have grown the prompt
         if settings.get("auto_compact", True):
@@ -481,6 +481,10 @@ async def agent_loop(run: Run, agent: dict, chat: dict, *, depth: int, path: lis
             msg["_truncated"] = True
             msg.pop("tool_calls", None)  # a call cut off mid-way has incomplete arguments
             msg["_carry"] = history.carry(chat, await run.context_size())
+        if comp.looped:
+            msg["_looped"] = comp.looped
+            msg.pop("tool_calls", None)  # the stream was stopped: any call in it is unfinished
+            msg["_carry"] = history.carry(chat, await run.context_size())
         messages.append(msg)
         if stats.get("prompt_tokens"):
             chat.setdefault("stats", {}).update(
@@ -490,6 +494,7 @@ async def agent_loop(run: Run, agent: dict, chat: dict, *, depth: int, path: lis
         run.emit("assistant_end", path=path, message=msg)
 
         cutoffs = cutoffs + 1 if cut_off else 0
+        looped = looped + 1 if comp.looped else 0
         if cutoffs >= MAX_CUTOFFS:
             raise llm.LLMError(f"The reply filled the context window {cutoffs} times in a row without finishing. "
                                "Ask for something smaller, start a new chat, or raise --ctx-size.")
@@ -507,6 +512,18 @@ async def agent_loop(run: Run, agent: dict, chat: dict, *, depth: int, path: lis
             if msg.get("content"):
                 partial.append(msg["content"])
             continue
+        if looped >= loops.MAX_LOOPS:
+            raise llm.LLMError(f"The model got stuck repeating itself {looped} times in a row, even after being told "
+                               "to move on. Try rephrasing the request, splitting it up, or another model.")
+        if comp.looped:
+            # Going round in circles: the next request carries the reply up to the loop (the
+            # repeated passage once) and tells the model to act on it (loops.note).
+            where = "answer" if comp.looped["channel"] == "content" else "thinking"
+            run.emit("notice", path=path, text=f"Loop guard: the {where} kept repeating the same passage "
+                     f"({comp.looped['repeats']} times), so the reply was stopped. Telling the agent to move on…")
+            if comp.looped["channel"] == "content" and msg.get("content"):
+                partial.append(msg["content"][:comp.looped["keep"]])
+            continue
         if not msg.get("tool_calls"):
             answer = "\n\n".join(partial + [msg["content"]]) if partial else msg["content"]
             partial.clear()
@@ -518,10 +535,31 @@ async def agent_loop(run: Run, agent: dict, chat: dict, *, depth: int, path: lis
 
         for batch in tool_batches(msg["tool_calls"]):
             await run_tools(run, agent, chat, batch, depth=depth, path=path, chain=chain, save=save)
+        if settings.get("loop_guard", True):
+            n, name = loops.mark_repeats(messages, task_start(chat))
+            if n >= loops.CALL_STOP:
+                save()
+                run.emit("notice", path=path, text=f"Loop guard: stopped. The agent made the same {name} call "
+                         f"{n} times and got the same result each time. Send a message to point it elsewhere.")
+                return f"(stopped: the agent kept repeating the same {name} call with the same result)"
+            if n >= loops.CALL_WARN:
+                save()
+                run.emit("notice", path=path, text=f"Loop guard: the same {name} call returned the same result "
+                         f"{n} times. Told the agent that repeating it changes nothing.")
 
     run.emit("notice", path=path, text=f"Stopped after {settings.get('max_steps')} steps without a final answer. "
                                         "Raise “Max steps per turn” in Settings to let agents work longer.")
     return "(stopped: step limit reached before a final answer)"
+
+
+def task_start(chat: dict) -> int:
+    """Where the task in progress starts in chat["messages"]: the newest user message (not one
+    queued as an aside; loop and cut-off notes aren't in there, they are made when sending), or the
+    start of what compaction left verbatim, whichever is later."""
+    messages = chat["messages"]
+    last_user = max((i for i, m in enumerate(messages) if m.get("role") == "user" and not m.get("_queued")), default=0)
+    upto = (history.latest(chat) or {}).get("upto") or 0
+    return max(last_user, upto)
 
 
 async def _complete(run: Run, agent: dict, chat: dict, sys_msg: dict, schemas: list, path: list, save,
@@ -540,12 +578,16 @@ async def _complete(run: Run, agent: dict, chat: dict, sys_msg: dict, schemas: l
         written = len(comp.reasoning) + len(comp.content) + sum(len(c["args"]) for c in comp.calls.values())
         return history.estimate(chat, chars + written)
 
+    guard = loops.Repetition() if settings.get("loop_guard", True) else None
+
     async def on_delta(kind: str, text: str, meta: dict | None = None) -> None:
         nonlocal shown
         run.emit("delta", path=path, kind=kind, text=text, **(meta or {}))
         if time.monotonic() - shown >= CONTEXT_EVERY:
             shown = time.monotonic()
             show_context(run, chat, path, live_tokens())
+        if guard:
+            guard.feed(kind, text)  # raises loops.Looping: closing the stream stops the generation
 
     run.emit("assistant_start", path=path, agent_id=agent["id"])
     await run.context_size()  # also learns whether the server is llama-server
@@ -561,8 +603,11 @@ async def _complete(run: Run, agent: dict, chat: dict, sys_msg: dict, schemas: l
                                                "(its file is still in the workspace).")
             strip_images(payload)
             comp = llm.Completion()
+            guard = loops.Repetition() if guard else None
             await llm.stream_chat(client, settings, model=agent["model"], messages=payload, tools=schemas,
                                   temperature=agent["temperature"], out=comp, on_delta=on_delta, llama=run.llama)
+    except loops.Looping as e:
+        comp.looped = e.info
     except asyncio.CancelledError:
         if comp.content or comp.reasoning:
             partial = comp.message()

@@ -10,6 +10,11 @@ Behaviour is keyed off the last user message:
   "mcp: <tool> <json>" -> calls <tool> (find_tools, call_tool, <server>__<tool>) with those arguments
   "which tools"    -> answers with the names of the tools the request offered
   "readloop N"     -> reads notes.txt N times in a row, then answers (tool outputs that pile up)
+  "loop N [heed]"  -> calls list_dir N times in a row (the same call, the same result); with "heed"
+                      it answers as soon as a result carries the loop guard's note
+  "stuck think" / "stuck answer" -> thinks / answers the same passage over and over (the loop
+                      guard stops it); after the guard's note it moves on and says what the note held
+  "stuck forever"  -> loops again after every note
   "delegate"       -> calls ask_agent(Coder, "shell: echo hello from coder")
   "delegate: <msg>" -> calls ask_agent(Coder, <msg>)
   "qa"             -> Orchestrator asks Coder to build something; Coder answers with a
@@ -52,6 +57,13 @@ def chunk(delta=None, finish=None, **extra):
             "choices": [{"index": 0, "delta": delta or {}, "finish_reason": finish}] if delta is not None or finish else []}
     body.update(extra)
     return f"data: {json.dumps(body)}\n\n"
+
+
+# a passage a looping model writes over and over (the loop guard tests count its marker)
+LOOP_PASSAGE = ("PLAN-MARKER. The board has three columns: To do, Doing, Done. Each card keeps a title, a note "
+                "and a due date; dragging a card between columns moves it in the saved state, and the header of "
+                "each column shows how many cards it holds. Save everything to localStorage after each change. ")
+LOOP_NOTE = "[Your previous reply was stopped because it got stuck in a loop"
 
 
 def pieces(text, n=6):
@@ -141,6 +153,10 @@ async def completions(request: Request):
             text = f"## Summary\n- Earlier transcript had {last['content'].count('ASSISTANT:')} assistant turns.\n- The user wants big replies."
             if keep := re.search(r"make sure to keep: (.*)", last["content"]):  # /compact <instructions>
                 text += f"\n- Kept as asked: {keep[1]}"
+        elif (last["role"] == "tool" and "[Loop guard:" in last["content"]
+              and re.match(r"loop \d+ heed", next(m["content"] for m in msgs if m["role"] == "user"))):
+            reasoning = "The loop guard says this changes nothing. Stop and answer."
+            text = f"Heeded the loop guard after {sum(m['role'] == 'tool' for m in msgs)} calls."
         elif (last["role"] == "tool" and "list_dir" in tools
               and (loop := re.match(r"loop (\d+)", next(m["content"] for m in msgs if m["role"] == "user")))
               and sum(m["role"] == "tool" for m in msgs) < int(loop[1])):
@@ -185,6 +201,19 @@ async def completions(request: Request):
                 reasoning = text[:2000] if user.startswith("verbatim: ") else text[:300]
                 if user.startswith("verbatim slow"):
                     delay = 0.03
+            elif user.startswith(LOOP_NOTE):
+                asked = next(str(m["content"]) for m in reversed(msgs[1:-1])
+                             if m["role"] == "user" and not str(m["content"]).startswith("[Your previous reply"))
+                if asked.startswith("stuck forever"):
+                    reasoning, text = "Let me plan the board.\n\n" + LOOP_PASSAGE * 15, "never reached"
+                else:
+                    reasoning = "Acting on the plan now."
+                    text = (f"Moved on. passages_in_note={user.count('PLAN-MARKER')} "
+                            f"answer_in_note={'Your answer so far' in user}")
+            elif user.startswith(("stuck think", "stuck forever")):
+                reasoning, text = "Let me plan the board.\n\n" + LOOP_PASSAGE * 15, "never reached"
+            elif user.startswith("stuck answer"):
+                reasoning, text = "Answer it.", "Here is the plan.\n\n" + LOOP_PASSAGE * 15
             elif user.startswith("loop ") and "list_dir" in tools:
                 tool = ("list_dir", {})
             elif user.startswith("readloop ") and "read_file" in tools:

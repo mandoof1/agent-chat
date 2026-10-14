@@ -491,6 +491,27 @@ Settings), the same model writes a summary of the older messages:
   error. This also works in delegated sub-chats, so a teammate never hands back an empty answer.
 - Thinking is never cut short.
 
+## Loop guard
+
+Local models sometimes go round in circles: Qwen has been seen thinking the same plan out 19
+times in a row (115,000 characters) until someone pressed Stop, and an agent can call the same
+tool with the same arguments over and over. The loop guard (on by default; Settings → Agents)
+catches both:
+
+- **A reply that repeats itself.** While the thinking and the answer stream, the app checks
+  every 500 characters whether the newest 200 have already appeared three times, over at least
+  2,000 characters. If so the reply is stopped, and the next request hands back the reply up to
+  the loop, with the repeated passage once, and tells the model to act on it instead of writing
+  it again. The trace says "Loop guard: the thinking kept repeating the same passage…". After
+  three stopped replies in a row the turn ends with an error.
+  Only repetition stops a reply, never length: thinking that keeps saying new things is left
+  alone however long it runs. Tool-call arguments (a file being written) aren't watched.
+- **The same call, the same result.** The third time a call with the same arguments returns
+  the same result in one task, the result the model sees gets a note saying that calling it
+  again won't change anything. At the fifth, the turn ends. A different result (a test run
+  after an edit, say) is progress and resets nothing; an output cleared to save context doesn't
+  count, since running the tool again is what the model was told to do.
+
 ## Notes for llama.cpp
 
 - Start `llama-server` with `--jinja`; tool calling needs it.
@@ -560,7 +581,8 @@ tests/run_all.sh --no-ui  # skip the real-browser suites (no Brave on this machi
 
 That runs, in order: `tests/test_unit.py` (history, compaction, routines, memory, store),
 `tests/e2e.py` (chat, tools, approvals, delegation, stop, edit), `tests/e2e_features.py`
-(sub-chats, statuses, compaction), `tests/e2e_cutoff.py`, `tests/e2e_ctx.py`,
+(sub-chats, statuses, compaction), `tests/e2e_cutoff.py`, `tests/e2e_loops.py` (the loop
+guard), `tests/e2e_ctx.py`,
 `tests/e2e_queue.py`, `tests/e2e_memory.py`, `tests/e2e_routines.py`, `tests/e2e_v2.py`
 (pinning, branching, exports, approve-all, titles, workspace, images, live shell output,
 agent order), `tests/e2e_calendar.py`, `tests/e2e_mcp.py` (MCP servers, against the fake

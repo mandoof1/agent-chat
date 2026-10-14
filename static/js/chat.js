@@ -542,6 +542,7 @@ function appendAssistant(container, m, results, index) {
   }
   if (m._stopped) container.append(el("div", { class: "stopped-tag" }, "Stopped here"));
   if (m._truncated) container.append(noticeEl("This reply filled the context window before it finished. The agent continues from where it stopped in the next reply."));
+  if (m._looped) container.append(noticeEl(loopedText(m._looped)));
   for (const tc of m.tool_calls || []) {
     let args;
     try { args = JSON.parse(tc.function.arguments || "{}"); } catch { args = { _raw: tc.function.arguments }; }
@@ -557,7 +558,17 @@ function appendAssistant(container, m, results, index) {
     }
     if (res) card.setResult(res.content);
     container.append(card.el);
+    if (res?._repeat) container.append(noticeEl(repeatText(tc.function.name, res._repeat)));
   }
+}
+
+// the loop guard's notices (app/loops.py), as the run showed them
+function loopedText(info) {
+  return `Loop guard: the ${info.channel === "content" ? "answer" : "thinking"} kept repeating the same passage (${info.repeats} times), so the reply was stopped and the agent was told to move on.`;
+}
+
+function repeatText(name, n) {
+  return `Loop guard: the same ${name} call returned the same result ${n} times. The agent was told that repeating it changes nothing.`;
 }
 
 function renderSubTranscript(container, msgs) {
@@ -829,7 +840,7 @@ function liveAssistantEnd(ev) {
   // the finished calls arrive next as tool_start events, in index order; each replaces its draft
   c.drafts = [...seg.drafts.values()].sort((a, b) => a.index - b.index);
   const m = ev.message;
-  if (m._truncated) {  // calls cut off mid-way are dropped by the server, so no tool_start will replace them
+  if (m._truncated || m._looped) {  // calls cut off mid-way are dropped by the server, so no tool_start will replace them
     for (const d of c.drafts) d.el.remove();
     c.drafts = [];
   }
