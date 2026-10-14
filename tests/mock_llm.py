@@ -15,6 +15,8 @@ Behaviour is keyed off the last user message:
   "stuck think" / "stuck answer" -> thinks / answers the same passage over and over (the loop
                       guard stops it); after the guard's note it moves on and says what the note held
   "stuck forever"  -> loops again after every note
+  "what were you thinking" -> after Stop: quotes the end of the stopped reply's thinking it was handed
+A message sent after Stop carries the end of the stopped reply's thinking; scenarios see the message alone.
   "delegate"       -> calls ask_agent(Coder, "shell: echo hello from coder")
   "delegate: <msg>" -> calls ask_agent(Coder, <msg>)
   "qa"             -> Orchestrator asks Coder to build something; Coder answers with a
@@ -94,6 +96,11 @@ async def completions(request: Request):
     if os.environ.get("MOCK_NO_VISION") and any("[+" in str(m.get("content")) for m in msgs):
         return JSONResponse({"error": {"code": 400, "type": "invalid_request_error",
                              "message": "image input is not supported - hint: if this is unexpected, you may need to provide the mmproj"}}, 400)
+    resumed = ""  # what a message sent after Stop carried of the stopped reply's thinking
+    for m in msgs:
+        if m["role"] == "user" and str(m.get("content")).startswith("[You were stopped before you finished"):
+            note, _, m["content"] = m["content"].partition("\n\n[The user's message:]\n")
+            resumed = note.split("\n", 1)[-1]
     last = msgs[-1]
     tools = {t["function"]["name"] for t in body.get("tools") or []}
     agent = (re.search(r"You are the (\w+) agent", msgs[0]["content"]) or [None, "?"])[1]
@@ -214,6 +221,8 @@ async def completions(request: Request):
                 reasoning, text = "Let me plan the board.\n\n" + LOOP_PASSAGE * 15, "never reached"
             elif user.startswith("stuck answer"):
                 reasoning, text = "Answer it.", "Here is the plan.\n\n" + LOOP_PASSAGE * 15
+            elif user.startswith("what were you thinking"):
+                text = f"Before the stop I had thought: {resumed[-40:]!r}" if resumed else "I don't know what I was thinking."
             elif user.startswith("loop ") and "list_dir" in tools:
                 tool = ("list_dir", {})
             elif user.startswith("readloop ") and "read_file" in tools:

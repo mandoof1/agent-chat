@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Stop, then "continue", picks up where it was
+- After you stop an agent, the next message you send carries the end of what the stopped reply
+  had thought (up to 10% of the window, at most 24,000 characters), like a cut-off reply's
+  continuation. Before, that thinking was dropped with the rest of the turn's (chat templates
+  drop older thinking anyway), so the model saw an empty reply and started over. It applies to
+  a reply stopped mid-stream and to one stopped while its tool ran; once you send another
+  message after that, it goes like any older turn's thinking.
+
 ### Loop guard
 - A reply that keeps writing the same passage is stopped while it streams: once the newest 200
   characters of its thinking or answer have appeared three times over at least 2,000

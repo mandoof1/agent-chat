@@ -104,6 +104,27 @@ async def test_full(c):
     assert len(errors) == 1 and "could not be compacted" in errors[0]
 
 
+async def test_resume_after_stop(c):
+    print("\n== stopped mid-reply, the next message brings back what it had thought")
+    await settings(c, base_url=MOCK)
+    chat = await new_chat(c, "assistant")
+    seen = False
+    async for ev in events(c, f"{B}/api/chats/{chat}/stream"):
+        if ev["type"] == "snapshot" and not seen:
+            seen = True
+            assert (await c.post(f"{B}/api/chats/{chat}/run", json={"content": "slow please"})).status_code == 200
+        if ev["type"] == "delta" and ev.get("kind") == "content":
+            await c.post(f"{B}/api/chats/{chat}/stop")
+        if ev["type"] == "done":
+            break
+    msgs = (await get_chat(c, chat))["messages"]
+    assert msgs[-1].get("_stopped") and msgs[-1].get("_carry") and "Let me decide" in msgs[-1]["reasoning_content"]
+    await run_turn(c, chat, "what were you thinking")
+    final = (await get_chat(c, chat))["messages"][-1]["content"]
+    print("  final:", final)
+    assert final.startswith("Before the stop I had thought:") and "Let me decide what to do." in final, final
+
+
 async def main():
     async with httpx.AsyncClient(timeout=None, headers={"X-Agent-Chat": "1"}) as c:
         try:
@@ -111,6 +132,7 @@ async def main():
             await test_delegated(c)
             await test_crowded(c)
             await test_full(c)
+            await test_resume_after_stop(c)
         finally:
             await settings(c, base_url=MOCK, auto_compact=True)
     print("\nall cut-off tests passed")
