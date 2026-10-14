@@ -2087,7 +2087,7 @@ def s_settings():
         t.key("esc", 0.5)
         # text keys on the search engine URL (not saved)
         t.key("alt-s", 1.0)
-        for _ in range(11):
+        for _ in range(12):
             t.key("tab", 0.1)
         assert focused_label(t, "Search engine URL")
         t.key("ctrl-u")
@@ -2110,7 +2110,7 @@ def s_settings():
         assert api("GET", "/api/state")["settings"].get("search_url") == keep.get("search_url")
         # Bypass in amber once on
         t.key("alt-s", 1.0)
-        for _ in range(10):
+        for _ in range(11):
             t.key("tab", 0.1)
         assert focused_label(t, "Bypass permissions")
         absent(t, "[x] Bypass permissions")
@@ -2813,7 +2813,7 @@ def s_dialogs():
     t.key("esc", 0.3)
     absent(t, "Memory ·")
     t.key("alt-s", 1.0)
-    for _ in range(11):
+    for _ in range(12):
         t.key("tab", 0.08)
     t.key("ctrl-u")
     t.paste(MOCK)
