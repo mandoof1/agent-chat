@@ -5,10 +5,19 @@ instructions, tools and (optionally) model. Every agent knows the rest of the te
 give any teammate a task or ask it a question. You watch every step live, and each agent's
 work for another agent shows up as its own chat you can open.
 
+An agent can also start **subagents**: copies of itself with a fresh context that each do one
+part of a job and report back, so the agent's own context holds the results, not every file
+and page they read. **MCP servers** plug in more tools (reverse engineering, databases,
+GitHub, ...).
+
 Agents share a **memory** about you that grows as you chat. A **Mail** agent reads, sorts,
 drafts and (with your approval) sends email; a **Planner** reads your calendars; a **Browser**
 agent drives a real browser. **Routines** run agents on a schedule. Long chats **compact
 themselves** before they run out of context.
+
+Use it from the **terminal** (`agent-chat`, a Rust client, like running `claude`) or the
+**browser** (`agent-chat web`); both show the same chats live, with the same **slash
+commands**.
 
 It talks to any OpenAI-compatible server. It's set up for llama.cpp's `llama-server` on
 `http://127.0.0.1:8080/v1`; Ollama, LM Studio and vLLM work too. Everything stays on your
@@ -57,9 +66,15 @@ curl -fsSL https://agent-chat-i4sv.onrender.com/install.sh | bash
 That installs Agent Chat for your user (no sudo): the app in `~/.local/share/agent-chat/app`,
 your chats, memory and settings in `~/.local/share/agent-chat/data` (never touched by an
 update), and two commands in `~/.local/bin`. It installs [uv](https://docs.astral.sh/uv/) if
-you don't have it. On Linux x86_64 it downloads the terminal client prebuilt (its SHA-256 is
-checked); elsewhere it builds it with `cargo` if you have Rust, or you use the web UI. To read
-the script first: `curl -fsSL https://agent-chat-i4sv.onrender.com/install.sh -o install.sh`.
+you don't have it. On Linux and macOS, x86_64 or ARM, it downloads the terminal client prebuilt
+(its SHA-256 is checked); elsewhere it builds it with `cargo` if you have Rust, or you use the
+web UI. On Windows, use WSL. To read the script first:
+`curl -fsSL https://agent-chat-i4sv.onrender.com/install.sh -o install.sh`.
+
+Put options after the pipe (`… | AGENT_CHAT_NO_TUI=1 bash`): `AGENT_CHAT_VERSION=0.3.3`
+installs that release, `AGENT_CHAT_NO_TUI=1` skips the terminal client, `AGENT_CHAT_BUILD_TUI=1`
+builds it with cargo even where a prebuilt one exists, and `AGENT_CHAT_HOME` /
+`AGENT_CHAT_BIN` move the install. The script's header lists the rest.
 
 Then start your model server and run `agent-chat`, like you'd run `claude`: it starts the app
 in the background if it isn't running and opens the terminal client.
@@ -159,6 +174,24 @@ port). It starts only this app, never the model.
   where it is. When you scroll up during a reply, a **Newest** pill takes you back down.
 - **Ctrl+B** hides the chat list to give the conversation the width.
 
+## Settings
+
+Settings (the gear on the rail, `/settings`, Alt+S in the terminal) has these tabs:
+
+- **Model:** the server's URL and API key, the default model (each agent can pick its own),
+  the context size (0 asks llama-server; set it for other servers), and when chats compact (70%
+  of the context by default). **Test connection** says what kind of server answered.
+- **Agents:** **Max steps per turn** (rounds of tool use per message, 30 by default, 0 = no
+  limit), the **shell command timeout** (180 s), **Subagents at once** (1), model-written chat
+  titles, automatic memory, and **Bypass permissions**.
+- **Web & browser:** the SearXNG URL for `web_search`, and the browser's executable and
+  headless switch.
+- **Email** and **Calendars:** see [Email](#email) and [Calendars](#calendars).
+- **MCP:** servers agents can use as tools; see [MCP servers](#mcp-servers).
+
+Settings live in `data/settings.json`; passwords and private calendar links in
+`data/secrets.json`, readable by your user only.
+
 ## Slash commands
 
 Type `/` at the start of the message box (web or terminal) and a menu of commands opens above
@@ -197,7 +230,7 @@ The installer puts it on your PATH (`agent-chat` starts it). From a checkout:
 
 ```bash
 cd tui && cargo build --release          # needs a Rust toolchain (rustup.rs); ~1 min, 8 MB binary
-./target/release/agent-chat-tui          # or --url http://host:8765, --light, --plain, --chat ID
+./target/release/agent-chat-tui          # or --url http://host:8765 (or AGENT_CHAT_URL), --light, --plain, --chat ID, --quiet
 ```
 
 ![The terminal client: the same handoff, approvals included](docs/img/tui.png)
@@ -209,8 +242,12 @@ cd tui && cargo build --release          # needs a Rust toolchain (rustup.rs); ~
   hides thinking (shown in full by default, as it streams and after); Alt+O opens every
   thinking block and tool result; Alt+F is the workspace drawer (Enter opens a file in a
   viewer); Alt+M memory, Alt+R routines, Alt+S settings, Alt+A the agent editor; F2 rename,
-  Alt+P pin, Ctrl+G branch, Ctrl+E edit and resend your last message, Ctrl+R regenerate or
-  retry, Ctrl+U attach a file by path, Ctrl+Y bypass permissions.
+  Alt+P pin, Alt+D delete, Alt+X export, Ctrl+G branch, Ctrl+L compact, Ctrl+E edit and resend
+  your last message, Ctrl+R regenerate or retry, Ctrl+U attach a file by path, Ctrl+Y bypass
+  permissions, Alt+B hide the sidebar.
+- **In the trace**, `[` and `]` select a reply: `c` copies it, `r` regenerates it, `b` branches
+  from it, and `o` opens the chat of its first handoff or subagent. In the sidebar, `/` filters,
+  `d` deletes, `r` renames, `p` pins, `e` edits the agent and `m` marks everything read.
 - **Mouse works too**: click an agent or a chat, scroll the trace. Replies can be copied with
   `c` on a selected turn (`[` and `]` select) through the terminal's clipboard (OSC 52).
 - Settings, agents, routines, email and calendars are edited in forms (Tab between fields,
@@ -224,7 +261,9 @@ cd tui && cargo build --release          # needs a Rust toolchain (rustup.rs); ~
 - Ctrl+C closes a dialog, then clears the filter or a non-empty message box, and only then
   quits; Ctrl+Q always quits.
 - Light terminals: `--light` (or `/theme light`, remembered); to keep your terminal's own
-  colors: `--plain`.
+  colors: `--plain`. It rings the terminal bell when an approval comes in; `--quiet` stops that.
+- What you toggle (thinking, verbose, sidebar, drawer, filter, theme) is kept in
+  `agent-chat-tui/state.json` in your config folder (`~/.config` on Linux).
 
 ## Starter agents
 
@@ -249,8 +288,8 @@ Personal Assistant, Tutor, Translator, Brainstormer and Data Analyst.
 
 | Tool | What it does |
 |---|---|
-| `list_dir`, `read_file`, `write_file`, `edit_file` | Work on files **inside the agent's workspace folder only**. Paths that escape it are refused. |
-| `run_shell` | Runs a command with the workspace as its working directory. **Not sandboxed.** By default every command needs your Approve/Deny in the chat. Output streams into the chat while it runs; `background=true` starts a long-running process and returns its log path. |
+| `list_dir`, `read_file`, `write_file`, `edit_file` | Work on files **inside the agent's workspace folder only**. Paths that escape it are refused. `read_file` numbers lines like `cat -n` and can read a range; `edit_file` replaces exact text, and when the text matches nowhere it tries again without copied line numbers or one extra level of indentation (and says so). |
+| `run_shell` | Runs a command with the workspace as its working directory. **Not sandboxed.** By default every command needs your Approve/Deny in the chat. Output streams into the chat while it runs; `background=true` starts a long-running process and returns its log path. Commands get your environment, not Agent Chat's own virtualenv, so `python3` and `pytest` are yours. |
 | `web_search` | Top 8 results (titles, URLs, snippets) from your SearXNG instance, see [Web search](#web-search). Without one it scrapes DuckDuckGo, which often blocks it. |
 | `web_fetch` | Downloads a page (up to 2 MB) and returns its readable text. |
 | `browser_navigate`, `browser_read`, `browser_links`, `browser_click`, `browser_type`, `browser_screenshot`, `browser_close` | Drive a real [Brave](https://brave.com/) browser for pages that need JavaScript, a login, or clicking/typing through steps. One shared session persists across the calls. See [Browser control](#browser-control). |
@@ -297,11 +336,13 @@ everything that was looked at. Only the report comes back.
 - **The task must stand alone.** A subagent can't see the conversation or ask anything back,
   so the calling agent writes the whole task: goal, known details and paths, and what the
   report should contain. It gets a short label (`description`) that the trace shows.
-- **Side by side.** Several subagent calls in one reply run at the same time, as many as the
-  model server serves at once: llama-server's slots (`--parallel N`) by default, one at a time
-  for other servers. Settings → Agents → **Subagents at once** overrides it. With
-  `--parallel 1` they run one after the other, which keeps each one's prompt in the server's
-  cache.
+- **One at a time, or side by side.** Subagents started in one reply run one after the other by
+  default, which keeps each one's prompt in the server's cache. Settings → Agents →
+  **Subagents at once** runs more together; 0 means as many as llama-server has slots
+  (`--parallel N`). Only raise it when every slot has room of its own: llama-server's
+  automatic `--parallel` gives four slots that share one context (`--kv-unified`), and four
+  growing subagents can fill it. vLLM, or llama-server with `--parallel N` and `-c` large
+  enough, can take it.
 - **One level.** A subagent can use the team (`ask_agent`) but can't start subagents itself.
 - **Its own chat.** Each subagent's work is a read-only chat, nested in the trace under its
   task (`↳ subagent <label>` in the terminal client) and listed under the agent. A model error
@@ -518,6 +559,9 @@ catches both:
 ## Notes for llama.cpp
 
 - Start `llama-server` with `--jinja`; tool calling needs it.
+- Summaries, chat titles and memory notes ask llama-server to skip thinking
+  (`chat_template_kwargs: {enable_thinking: false}`). With Qwen3.5-4B a compaction took 100–196 s
+  with thinking (and once returned nothing) and 12–22 s without. Other servers aren't sent it.
 - Thinking (`reasoning_content`) streams into a collapsible "Thinking" block that follows the
   newest text. It is never capped.
 - With `--parallel 1`, chats that run at the same time wait in line at the server. Switching
@@ -531,11 +575,17 @@ catches both:
 - For images, load a vision model with its projector (`--mmproj`). Without one the app sends
   the text alone and tells you.
 
+**Measured on a laptop** (2026-10-12, Qwen3.5-4B Q4_K_M on an RTX 3050 with 4 GB, llama.cpp
+b11564, `-np 1`): with a 16k context, fully offloaded, it ran about 29 tok/s, and the Orchestrator
+had the Coder build a todo app with 7 passing tests in 2 min 47 s. With 8k it ran about
+45 tok/s, but multi-file coding hit the 30-step limit before it finished. For agent work give a
+small model at least 16k.
+
 ## Files
 
 ```
 app/main.py       HTTP API + SSE streams, workspace browser, exports
-app/runner.py     agent loop, delegation + sub-chats, approvals, background runs, titles, memory extraction
+app/runner.py     agent loop, delegation + sub-chats, subagents, approvals, background runs, titles, memory extraction
 app/history.py    what the model sees; auto-compaction; image parts
 app/memory.py     long-term memory (SQLite + FTS5)
 app/mail.py       IMAP/SMTP email tools
@@ -549,6 +599,10 @@ app/store.py      JSON storage: agents, chats (pin, fork), settings
 app/defaults.py   starter agents
 static/           the web UI: index.html, style.css, js/ (ES modules, no build step)
 tui/              the Rust terminal client (ratatui); talks to the same API
+bin/agent-chat    the launcher (start the app, open a client, update, uninstall)
+site/             the install page and install.sh, served on Render
+scripts/          build-release.sh (the terminal client for this machine), publish-release.sh
+.github/          CI on every push and PR; release builds of the terminal client
 data/             agents, chats, settings (JSON), memory.db, secrets.json
 tests/            mock model server, unit tests, end-to-end tests (web, browser, TUI), run_all.sh
 ```
@@ -600,7 +654,13 @@ CLI flags), `tests/e2e_tui_render.py` (hostile text, emoji, every size from 1×1
 storms; each step checks the screen matches a full repaint) and `tests/e2e_tui_slash.py`
 (every command and alias in every state). `tests/e2e_ui_more.py` does the same for the web
 slash menu, the chat footer and huge pastes. `TEST_PORT_BASE=8900 tests/run_all.sh` moves every
-port, so two runs can share a machine.
+port, so two runs can share a machine; `SUITES=unit,subagents` runs just those; `SKIP_TUI=1`
+skips the terminal client.
+
+**CI** (`.github/workflows/ci.yml`) runs all of it on every push and pull request: the app and
+API suites, the web UI in headless Chrome, the Rust tests on Linux and macOS, the four
+terminal-client suites side by side, and the installer end to end on Linux and macOS
+(`tests/install_smoke.sh`). A failing suite's logs and screenshots are kept as an artifact.
 
 To run one suite by hand, start the mocks and the app yourself:
 
@@ -626,6 +686,16 @@ Environment variables: `AGENT_CHAT_DATA` (data folder), `AGENT_CHAT_WORKSPACE` (
 workspace), `AGENT_CHAT_HOSTS` (extra allowed host names, for example to reach it from your
 phone over the LAN; you also need to start uvicorn with `--host 0.0.0.0`), `PORT` (for
 `run.sh` and `install-service.sh`).
+
+## Releasing
+
+1. Set the version in `app/main.py`, `pyproject.toml`, `tui/Cargo.toml` and `site/install.sh`
+   (`PINNED_VERSION`), and give it a section in `CHANGELOG.md`.
+2. `git tag vX.Y.Z && git push origin vX.Y.Z`: `.github/workflows/release.yml` builds
+   `agent-chat-tui` for linux-x86_64, linux-aarch64, macos-aarch64 and macos-x86_64.
+3. `scripts/publish-release.sh vX.Y.Z` waits for that build, checks the checksums and publishes
+   the release with the CHANGELOG section as its notes. `agent-chat update` and the installer
+   take the newest release.
 
 ## License
 
