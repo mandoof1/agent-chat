@@ -1266,7 +1266,7 @@ impl App {
             .text("compact_at", "Compact at % of the context", &g("compact_at"), "30–95")
             .text("max_steps", "Max steps per turn", &g("max_steps"), "0 = no limit")
             .text("shell_timeout", "Shell command timeout (s)", &g("shell_timeout"), "0 = no limit")
-            .text("parallel_subagents", "Subagents at once", &g("parallel_subagents"), "0 = as many as the server serves at once")
+            .text("parallel_subagents", "Subagents at once", &g("parallel_subagents"), "1 = one at a time; 0 = llama-server's slots")
             .bool("auto_title", "Let the model name each chat after its first reply", b("auto_title"), "")
             .bool("auto_memory", "Let the model save new things it learned about you", b("auto_memory"), "")
             .bool("bypass_approvals", "Bypass permissions (run commands and send email without asking)", b("bypass_approvals"), "")

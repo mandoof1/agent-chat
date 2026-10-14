@@ -447,6 +447,23 @@ def test_chat_status_with_subagents_side_by_side():
             store.delete_chat(c["id"])
 
 
+def test_subagents_run_one_at_a_time_unless_asked():
+    from app import runner
+    chat = store.create_chat("coder")
+    run = runner.Run(chat)
+    run.n_ctx, run.slots = 8192, 4  # llama-server's automatic -np: four slots sharing one context
+    try:
+        assert asyncio.run(run.parallel()) == 1, "the default"
+        store.save_settings({"parallel_subagents": 3})
+        assert asyncio.run(run.parallel()) == 3
+        store.save_settings({"parallel_subagents": 0})
+        assert asyncio.run(run.parallel()) == 4, "0: the server's slots"
+    finally:
+        store.save_settings({"parallel_subagents": 1})
+        runner.views.pop(chat["id"], None)
+        store.delete_chat(chat["id"])
+
+
 def test_a_subagent_gets_its_own_prompt_and_no_subagent_tool():
     from app import runner
     store.seed_defaults()

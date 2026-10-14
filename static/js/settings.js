@@ -23,7 +23,7 @@ export function openSettings(tab = "model") {
   f("base_url").value = S.settings.base_url;
   f("api_key").value = S.settings.api_key;
   f("max_steps").value = S.settings.max_steps ?? 30;
-  f("parallel_subagents").value = S.settings.parallel_subagents ?? 0;
+  f("parallel_subagents").value = S.settings.parallel_subagents ?? 1;
   f("shell_timeout").value = S.settings.shell_timeout ?? 180;
   f("auto_compact").checked = S.settings.auto_compact !== false;
   f("auto_memory").checked = S.settings.auto_memory !== false;
@@ -204,7 +204,7 @@ form.addEventListener("submit", async (e) => {
       api_key: f("api_key").value,
       model: f("model").value,
       max_steps: wholeOrKeep(f("max_steps").value),        // empty = leave as is; 0 = no limit
-      parallel_subagents: wholeOrKeep(f("parallel_subagents").value),  // 0 = automatic
+      parallel_subagents: wholeOrKeep(f("parallel_subagents").value),  // 0 = llama-server's slots
       shell_timeout: wholeOrKeep(f("shell_timeout").value),
       auto_compact: f("auto_compact").checked,
       auto_memory: f("auto_memory").checked,

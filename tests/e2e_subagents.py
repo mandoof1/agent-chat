@@ -96,7 +96,7 @@ async def test_basics(c):
 
 async def test_parallel(c):
     print("\n== side by side when allowed, one at a time when not")
-    for setting, together in [(2, True), (0, False), (1, False)]:
+    for setting, together in [(2, True), (1, False), (0, False)]:  # (0: the mock's one slot)
         await c.put(f"{B}/api/settings", json={"parallel_subagents": setting})
         cid = await new_chat(c, "coder")
         statuses = []
@@ -116,7 +116,7 @@ async def test_parallel(c):
             assert (st[cid], st[a["id"]], st[b["id"]]) == ("delegated", "running", "running"), st
             print("  while both work: the chat is delegated, both subagents running")
         print(f"  parallel_subagents={setting}: {'side by side' if together else 'one after the other'}")
-    await c.put(f"{B}/api/settings", json={"parallel_subagents": 0})
+    await c.put(f"{B}/api/settings", json={"parallel_subagents": 1})
 
 
 async def test_stop(c):

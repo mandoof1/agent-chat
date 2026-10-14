@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.3.3 — 2026-10-14
+
+Subagents, MCP servers, the terminal client's thinking in full, and fixes from running a 4B
+model for real.
 
 ### Subagents
 - A new `subagent` tool lets an agent hand one self-contained task to a fresh copy of itself:
@@ -9,10 +12,10 @@
   with every file and page it looked at; only the report comes back. Coder, Researcher and
   Reviewer have it (existing installs get it once, and keep it off if you untick it); tick
   "Start subagents" in any agent's tools to give it to others.
-- Several subagent calls in one reply run side by side, as many at once as the model server
-  serves: llama-server's slot count (`-np`) by default, one at a time for other servers, or the
-  number in Settings → Agents → Subagents at once. With one slot they run one after the other,
-  so a subagent never pushes the others out of the server's prompt cache.
+- Subagents started in one reply run one after the other by default, so each keeps its prompt
+  in the server's cache. Settings → Agents → **Subagents at once** runs more side by side (0: as
+  many as llama-server has slots). Not the slots by default: llama-server's automatic
+  `--parallel` gives four slots sharing one context, which four subagents can fill.
 - A subagent can't see the conversation or ask anything back, and can't start subagents of its
   own. Each one gets its own read-only chat, nested in the trace under its task's label like a
   handoff (`↳ subagent Part 1` in the terminal client) and listed as a subagent's chat. A model
@@ -44,6 +47,31 @@
 - A call asks you first unless the tool says it is read-only or non-destructive; per server,
   `"confirm"` can be `"always"` or `"never"`. Images a tool returns are saved under `mcp/` in the
   workspace.
+
+### Fixes from a real model
+Found by watching Qwen3.5-4B (Q4_K_M, RTX 3050 4 GB, llama.cpp) build a todo app with tests:
+- **Shell commands run outside Agent Chat's own virtualenv.** They inherited the app's `.venv`
+  on PATH and `VIRTUAL_ENV`, so an agent's `python3` lacked your packages ("No module named
+  pytest") and an install could change the app's environment.
+- **Edits stopped failing over copied line numbers.** `read_file` numbers lines like `cat -n`
+  (a tab, not spaces the model copies as indentation), and `edit_file`, when the text matches
+  nowhere, tries again without copied line numbers or one extra indentation, and says so.
+  Reading past the end of a file says how long it is instead of "(empty file)".
+- **Summaries, titles and memory notes skip thinking** on llama-server
+  (`enable_thinking: false`): a compaction took 100–196 s, once returning nothing; now 12–22 s.
+- **Clearing old outputs works in small windows.** It kept the three newest outputs, which at
+  8k were whole files filling most of the window; it now keeps as many as fit in 20% of it.
+  Old `write_file` contents are cleared too (the file holds them), tagged "cleared" like outputs.
+
+### Platforms and CI
+- The terminal client is prebuilt for Linux and macOS on x86_64 and ARM. A `vX.Y.Z` tag builds
+  all four (`.github/workflows/release.yml`), `scripts/publish-release.sh` publishes them, and
+  the installer picks the one for your machine (cargo for anything else).
+- CI on every push and pull request: the app and API suites, the web UI in headless Chrome, the
+  Rust tests on Linux and macOS, the four terminal-client suites, and the installer end to end
+  on Linux and macOS (`tests/install_smoke.sh`).
+- macOS: the installer and the launcher broke paths with `//` under bash 3.2 (macOS's
+  `TMPDIR`); fixed.
 
 ## 0.3.2 — 2026-10-12
 
