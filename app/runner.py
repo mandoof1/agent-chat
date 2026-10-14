@@ -24,8 +24,8 @@ events for its path, re-based so the sub-chat page renders them like any other c
 A subagent (the subagent tool) is a throwaway copy of the calling agent: its prompt and tools
 (minus subagent), a fresh context, one task, a report back. Its work lives in a sub-chat of its
 own (chat["parent"]["subagent"]), shown nested like a handoff. Several subagent calls in one reply
-run side by side, as many at once as the model server serves (Run.parallel), so more than one
-view can be live at a time.
+may run side by side (Run.parallel; one at a time by default), so more than one view can be live
+at a time.
 """
 
 import asyncio
@@ -202,12 +202,13 @@ class Run:
         return self.n_ctx
 
     async def parallel(self) -> int:
-        """How many subagents may run at once: the setting, or by default as many requests as the
-        model server serves at once (llama-server's slots; 1 for other servers, which don't say)."""
+        """How many subagents may run at once: the setting (1 by default), or with 0 as many as
+        llama-server has slots. Not the slots by default: llama-server's automatic -np gives four
+        slots that share one context (--kv-unified), which four growing subagents can overflow."""
         try:
-            n = int(store.get_settings().get("parallel_subagents") or 0)
+            n = int(store.get_settings().get("parallel_subagents", 1))
         except (TypeError, ValueError):
-            n = 0
+            n = 1
         if n > 0:
             return n
         await self.context_size()
