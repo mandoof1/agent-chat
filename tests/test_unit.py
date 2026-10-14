@@ -106,6 +106,33 @@ def test_repeated_tool_calls_are_flagged_from_the_third():
     assert loops.mark_repeats(msgs, len(msgs) - 2) == (0, ""), "only this task's calls count"
 
 
+def test_thinking_of_a_stopped_reply_goes_back_with_the_next_message():
+    task = {"role": "user", "content": "build it"}
+    stopped = {"role": "assistant", "content": "", "reasoning_content": "x" * 50 + "the plan so far", "_stopped": True}
+    out = history.to_llm([task, stopped, {"role": "user", "content": "continue"}])
+    assert out[1] == {"role": "assistant", "content": ""} and "reasoning_content" not in out[1]
+    assert out[2]["content"].startswith("[You were stopped before you finished your last reply. What you had thought so far")
+    assert "the plan so far" in out[2]["content"] and out[2]["content"].endswith("[The user's message:]\ncontinue")
+    # sized when it was stopped (mark_stopped), like a cut-off reply's continuation
+    chat = {"messages": [task, dict(stopped)], "stats": {"chars_per_token": 3.0}}
+    history.mark_stopped(chat, 200)
+    chat["messages"].append({"role": "user", "content": "continue"})
+    sent = history.to_llm(chat["messages"])[2]["content"]
+    assert "The end of what you had thought so far" in sent and "x" * 50 not in sent and "the plan so far" in sent
+    # stopped while a tool ran: that reply's thinking, its call and the cancelled result
+    call = {"role": "assistant", "content": "", "reasoning_content": "read a.txt first",
+            "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]}
+    msgs = [task, call, {"role": "tool", "tool_call_id": "c1", "content": history.CANCELLED}, {"role": "user", "content": "go on"}]
+    assert "read a.txt first" in history.to_llm(msgs)[-1]["content"]
+    # a turn that finished hands nothing back, and a stopped one only while the message right after
+    # it is the newest (later, it goes like any older turn's thinking)
+    done = [task, {"role": "assistant", "content": "done", "reasoning_content": "secret"}, {"role": "user", "content": "next"}]
+    assert history.to_llm(done)[-1]["content"] == "next"
+    later = [task, stopped, {"role": "user", "content": "continue"}, {"role": "assistant", "content": "ok"},
+             {"role": "user", "content": "thanks"}]
+    assert [m["content"] for m in history.to_llm(later)] == ["build it", "", "continue", "ok", "thanks"]
+
+
 def test_repair_answers_orphan_tool_calls():
     msgs = [{"role": "assistant", "content": "", "tool_calls": [{"id": "a", "type": "function", "function": {"name": "f", "arguments": "{}"}},
                                                                 {"id": "b", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},

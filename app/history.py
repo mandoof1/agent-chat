@@ -37,6 +37,7 @@ CLEAR_MIN_CHARS = 1000         # shorter outputs aren't worth a placeholder
 KEPT_TOOLS = {"ask_agent", "subagent", "remember", "recall_memory", "forget_memory"}  # reports, memory: kept
 OUTPUT_FRACTION = 0.25         # most of the context one tool output may take
 CANCELLED = "[cancelled: the user stopped the run]"  # the result of a call a stopped run never finished
+STOPPED_NOTE = "[You were stopped before you finished your last reply. {label}, for reference:]"
 QUEUED_NOTE = ("[The user sent this while you were working. Take it into account, then carry on with "
                "your task unless it says otherwise.]")
 
@@ -87,11 +88,16 @@ def to_llm(messages: list[dict], memory: bool = True, images: bool = False) -> l
     A message the user queued while the agent was working (`_queued`) is labelled as such, so the
     model treats it as an aside to the task in progress rather than a fresh request.
 
+    The user's newest message, sent after they stopped the agent, carries the end of the stopped
+    reply's thinking (see `stopped_note`): dropped with the rest of that turn's, it would leave the
+    model nothing of what it had worked out, and "continue" would start over.
+
     With images=True, a user message with attached images (`_images`, workspace paths) becomes a list
     of content parts with `attach://<path>` placeholders that runner.inline_images turns into data URLs
     right before the request (so the base64 never counts towards the context-size estimate)."""
     live = [i for i, m in enumerate(messages) if not m.get("_error")]
     last_user = max((i for i in live if messages[i].get("role") == "user"), default=-1)
+    asked, resume = last_user, stopped_note(messages, live, last_user)
     cut_off = {i for i in live if i > last_user and (messages[i].get("_truncated") or messages[i].get("_looped"))}
     if cut_off:
         last_user = max(cut_off)  # the note acts as a new user turn, so older thinking is dropped
@@ -107,6 +113,8 @@ def to_llm(messages: list[dict], memory: bool = True, images: bool = False) -> l
             clean.pop("reasoning_content", None)
         if m.get("_queued") and m.get("role") == "user":
             clean["content"] = f"{QUEUED_NOTE}\n{m['content']}"
+        if i == asked and resume:
+            clean["content"] = f"{resume}\n\n[The user's message:]\n{clean['content']}"
         if memory and m.get("_recall") and m.get("role") == "user":
             clean["content"] = f"{clean['content']}\n\n[From your memory of the user, possibly relevant]\n{m['_recall']}"
         if images and m.get("_images") and m.get("role") == "user":
@@ -114,6 +122,35 @@ def to_llm(messages: list[dict], memory: bool = True, images: bool = False) -> l
                 {"type": "image_url", "image_url": {"url": f"attach://{path}"}} for path in m["_images"]]
         out.append(clean)
     return out
+
+
+def stopped_note(messages: list[dict], live: list[int], asked: int) -> str | None:
+    """If the turn before the user's message at `asked` was stopped (Stop mid-reply leaves a
+    `_stopped` reply; mid-tool, CANCELLED results), the end of that turn's last thinking, labelled.
+    `_carry` (set when it was stopped, `mark_stopped`) is how much of it fits."""
+    if asked < 0:
+        return None
+    before = max((i for i in live if i < asked and messages[i].get("role") == "user"), default=-1)
+    turn = [messages[i] for i in live if before < i < asked]
+    if not any(m.get("_stopped") or (m.get("role") == "tool" and m.get("content") == CANCELLED) for m in turn):
+        return None
+    m = next((m for m in reversed(turn) if m.get("role") == "assistant" and m.get("reasoning_content")), None)
+    if m is None:
+        return None
+    tail, reasoning = m.get("_carry") or CONTINUE_TAIL, m["reasoning_content"]
+    label = "The end of what you had thought so far" if len(reasoning) > tail else "What you had thought so far"
+    return f"{STOPPED_NOTE.format(label=label)}\n{reasoning[-tail:]}"
+
+
+def mark_stopped(chat: dict, n_ctx: int | None) -> None:
+    """The user stopped the run: note on its last thinking how much of it to hand back with their
+    next message (stopped_note), sized for this context window like a cut-off reply's."""
+    for m in reversed(chat["messages"]):
+        if m.get("role") == "user":
+            return
+        if m.get("role") == "assistant" and m.get("reasoning_content"):
+            m.setdefault("_carry", carry(chat, n_ctx))
+            return
 
 
 def cleared_note(m: dict) -> str:

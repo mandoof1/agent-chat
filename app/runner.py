@@ -944,6 +944,7 @@ async def _run_top(run: Run, agent: dict, mode: str, instructions: str = "") -> 
             await agent_loop(run, agent, chat, depth=0, path=[], chain=[agent["id"]])
             ok = True
     except asyncio.CancelledError:
+        history.mark_stopped(chat, run.n_ctx)
         run.emit("stopped")
     except llm.LLMError as e:
         chat["messages"].append({"role": "assistant", "content": "", "_error": str(e)})

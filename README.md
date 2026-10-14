@@ -490,6 +490,9 @@ Settings), the same model writes a summary of the older messages:
   half the window, the app compacts first. After four cut-offs in a row the turn stops with an
   error. This also works in delegated sub-chats, so a teammate never hands back an empty answer.
 - Thinking is never cut short.
+- After you press Stop, the next message you send carries the end of what the stopped reply had
+  thought (the same amount a cut-off reply hands back), so "continue" picks up from there
+  instead of starting over.
 
 ## Loop guard
 
