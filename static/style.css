@@ -438,6 +438,8 @@ details.thinking .think-text {
 .tool-card .t-state.ok { color: var(--ok); }
 .tool-card .t-state.err { color: var(--danger); }
 .tool-card .t-state.run { color: var(--accent); }
+.tool-card .t-time { font: 500 11px/1 var(--mono); color: var(--faint); flex: none; font-variant-numeric: tabular-nums; }
+.tool-card .t-time:empty { display: none; }
 .tool-card .t-body { padding: 2px 10px 10px; display: grid; gap: 8px; min-width: 0; }
 .tool-card .t-label { font-size: 11.5px; color: var(--muted); margin-top: 4px; display: flex; align-items: center; gap: 8px; }
 .tool-card .t-label .btn { margin-left: auto; }

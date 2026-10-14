@@ -32,6 +32,7 @@ class Tui:
                 os.chdir(cwd)
             os.environ.update(env or {})
             os.environ["TERM"] = "xterm-256color"
+            os.environ["AGENT_CHAT_NO_CLIPBOARD"] = "1"  # copies in the tests leave the desktop's clipboard alone
             os.environ["COLUMNS"], os.environ["LINES"] = str(cols), str(rows)
             os.execv(binary, [binary, *(["--url", url, "--quiet", *extra] if argv is None else argv)])
         self.pid, self.fd = pid, fd

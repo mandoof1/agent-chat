@@ -171,6 +171,25 @@ fn composer_with(text: &str) -> TextArea<'static> {
     c
 }
 
+/// A stretch of the trace selected with the mouse: (line, column) where the drag started and
+/// where it is now, in the rendered trace's lines (so scrolling keeps it on the same text), for
+/// the trace it was made in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Selection {
+    pub anchor: (usize, usize),
+    pub head: (usize, usize),
+    /// The mouse moved with the button down (a plain click selects nothing).
+    pub moved: bool,
+    pub trace: u64,
+}
+
+impl Selection {
+    /// The start and the end (inclusive), in reading order.
+    pub fn span(&self) -> ((usize, usize), (usize, usize)) {
+        if self.anchor <= self.head { (self.anchor, self.head) } else { (self.head, self.anchor) }
+    }
+}
+
 pub struct App {
     pub api: Api,
     pub theme: Theme,
@@ -243,6 +262,12 @@ pub struct App {
     /// Columns the sidebar and the files drawer took in the last frame (0 when not drawn): what a
     /// mouse click lands on.
     pub drawn_cols: (u16, u16),
+    /// Where the trace's lines were drawn in the last frame (what a drag selects in).
+    pub trace_area: ratatui::layout::Rect,
+    /// Text selected by dragging in the trace (highlighted; copied when the button is let go).
+    pub sel: Option<Selection>,
+    /// The second a running call's clock last showed (tick redraws the trace when it changes).
+    pub clock_second: u64,
     /// The sidebar selection (with the list's height and length) the list was last scrolled to
     /// show; it scrolls to it again only when one of those changes, so the wheel can scroll it.
     pub side_snap: Option<(usize, usize, usize)>,
@@ -335,6 +360,9 @@ impl App {
             edit_from: None,
             side_row_map: HashMap::new(),
             drawn_cols: (0, 0),
+            trace_area: ratatui::layout::Rect::default(),
+            sel: None,
+            clock_second: 0,
             side_snap: None,
             memory_back: None,
             routines_return: false,
@@ -2274,7 +2302,11 @@ impl App {
                 self.touch();
             }
             "tool_start" => {
-                self.trace.tool_start(&path, d.get("call_id").and_then(|c| c.as_str()).unwrap_or(""), d.get("name").and_then(|n| n.as_str()).unwrap_or(""), d.get("args").cloned().unwrap_or(Value::Null), &agents);
+                let call_id = d.get("call_id").and_then(|c| c.as_str()).unwrap_or("");
+                self.trace.tool_start(&path, call_id, d.get("name").and_then(|n| n.as_str()).unwrap_or(""), d.get("args").cloned().unwrap_or(Value::Null), &agents);
+                if let Some(ts) = d.get("ts").and_then(|t| t.as_f64()) {
+                    self.trace.tool_clock(&path, call_id, ts, &agents);
+                }
                 self.touch();
             }
             "tool_progress" => {
@@ -2282,7 +2314,11 @@ impl App {
                 self.touch();
             }
             "tool_result" => {
-                self.trace.tool_result(&path, d.get("call_id").and_then(|c| c.as_str()).unwrap_or(""), d.get("content").and_then(|c| c.as_str()).unwrap_or(""), &agents);
+                let call_id = d.get("call_id").and_then(|c| c.as_str()).unwrap_or("");
+                self.trace.tool_result(&path, call_id, d.get("content").and_then(|c| c.as_str()).unwrap_or(""), &agents);
+                if let Some(secs) = d.get("secs").and_then(|t| t.as_f64()) {
+                    self.trace.tool_took(&path, call_id, secs, &agents);
+                }
                 if self.cfg.files {
                     self.refresh_files(false).await;
                 }
@@ -2325,7 +2361,12 @@ impl App {
                 self.touch();
             }
             "approval_done" => {
-                self.trace.approval(&path, d.get("call_id").and_then(|c| c.as_str()).unwrap_or(""), None, d.get("approved").and_then(|a| a.as_bool()), &agents);
+                let call_id = d.get("call_id").and_then(|c| c.as_str()).unwrap_or("");
+                let approved = d.get("approved").and_then(|a| a.as_bool());
+                self.trace.approval(&path, call_id, None, approved, &agents);
+                if let (Some(true), Some(ts)) = (approved, d.get("ts").and_then(|t| t.as_f64())) {
+                    self.trace.tool_clock(&path, call_id, ts, &agents);  // waiting for you isn't running time
+                }
                 self.touch();
             }
             "approval_bypassed" => {
@@ -2548,10 +2589,70 @@ impl App {
                 }
                 Focus::Files => self.focus = Focus::Files,
                 // the message box of a chat you write in; the trace of a sub-agent's chat
-                _ => self.focus = if self.in_chat() { Focus::Composer } else { Focus::Messages },
+                _ => {
+                    self.focus = if self.in_chat() { Focus::Composer } else { Focus::Messages };
+                    // where a drag would start selecting from (a click alone clears the last one)
+                    self.sel = self.trace_pos(m.column, m.row).map(|p| Selection { anchor: p, head: p, moved: false, trace: self.trace.id });
+                }
+            },
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let Some(mut sel) = self.sel else { return };
+                // past the top or the bottom of the trace: scroll along, a line at a time
+                let a = self.trace_area;
+                if m.row < a.y {
+                    self.scroll = self.scroll.saturating_sub(1);
+                    self.follow = false;
+                } else if m.row >= a.bottom() && self.rendered.as_ref().is_some_and(|r| self.scroll + (a.height as usize) < r.lines.len()) {
+                    self.scroll += 1;
+                }
+                if let Some(p) = self.trace_pos(m.column, m.row) {
+                    sel.head = p;
+                    sel.moved = true;
+                    self.sel = Some(sel);
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => match self.sel {
+                Some(sel) if sel.moved => {
+                    let text = self.selected_text();
+                    if !text.is_empty() {
+                        self.copy(&text);
+                        let n = text.chars().count();
+                        self.toast(&format!("Copied {n} character{}", if n == 1 { "" } else { "s" }), false);
+                    }
+                }
+                _ => self.sel = None,
             },
             _ => {}
         }
+    }
+
+    /// The trace position (rendered line, column) under the mouse, held inside the drawn trace.
+    fn trace_pos(&self, col: u16, row: u16) -> Option<(usize, usize)> {
+        let a = self.trace_area;
+        if a.width == 0 || a.height == 0 || self.rendered.is_none() {
+            return None;
+        }
+        let row = row.clamp(a.y, a.bottom() - 1);
+        let col = col.clamp(a.x, a.right() - 1);
+        Some((self.scroll + (row - a.y) as usize, (col - a.x) as usize))
+    }
+
+    /// The selected text, as drawn: whole lines between the first and the last, which go from
+    /// and to the columns the drag started and ended at; trailing spaces trimmed.
+    pub fn selected_text(&self) -> String {
+        let (Some(sel), Some(r)) = (self.sel, self.rendered.as_ref()) else { return String::new() };
+        if sel.trace != self.trace.id {
+            return String::new();
+        }
+        let ((l0, c0), (l1, c1)) = sel.span();
+        let mut out = Vec::new();
+        for (i, line) in r.lines.iter().enumerate().take(l1 + 1).skip(l0) {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            let from = if i == l0 { c0 } else { 0 };
+            let to = if i == l1 { c1 + 1 } else { usize::MAX };
+            out.push(strip_gutter(text::cols(&text, from, to)).trim_end().to_string());
+        }
+        out.join("\n")
     }
 
     /// Columns the sidebar and the drawer take at this width: 30 and 32 when shown, and below 90
@@ -2946,6 +3047,8 @@ impl App {
         use base64::Engine;
         let b64 = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
         print!("\x1b]52;c;{b64}\x07");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        system_clipboard(text);
     }
 
     async fn on_composer_key(&mut self, k: KeyEvent) {
@@ -3359,6 +3462,12 @@ impl App {
 
     pub fn tick(&mut self) {
         let now = Instant::now();
+        // a running call's clock counts up: redraw the trace each new second it shows
+        let second = trace::now() as u64;
+        if self.clock_second != second && self.trace.clock_running() {
+            self.clock_second = second;
+            self.touch();
+        }
         self.toasts.retain(|t| now.duration_since(t.at) < Duration::from_millis(if t.err { 7000 } else { 3500 }));
         // /context and /usage say how long the chat has been going: an open one keeps counting
         if let Some(Overlay::Info { title, scroll, .. }) = &self.overlay {
@@ -3373,6 +3482,71 @@ impl App {
             }
         }
     }
+}
+
+/// Selected trace text without the trace's own drawing in front of it: the bars of nesting,
+/// quotes and code blocks ("│ ", "▎ ") and a step's marker ("● ", "○ "...). What follows them,
+/// a code line's indentation say, stays.
+fn strip_gutter(mut s: &str) -> &str {
+    loop {
+        match s.strip_prefix("│ ").or_else(|| s.strip_prefix("▎ ")) {
+            Some(rest) => s = rest,
+            None if s == "│" || s == "▎" => return "",
+            None => break,
+        }
+    }
+    for marker in ["● ", "○ ", "◐ ", "◆ ", "■ ", "✖ "] {
+        if let Some(rest) = s.strip_prefix(marker) {
+            return rest;
+        }
+    }
+    s
+}
+
+/// Copy to the desktop's clipboard as well as through the terminal (OSC 52, which some terminals
+/// ignore or turn off): the first of wl-copy, xclip, xsel and pbcopy that is there, else KDE's
+/// Klipper over D-Bus. On a thread of its own, so a slow one never holds up the screen.
+/// AGENT_CHAT_NO_CLIPBOARD=1 leaves the desktop's clipboard alone (the tests set it).
+fn system_clipboard(text: &str) {
+    if cfg!(test) || std::env::var_os("AGENT_CHAT_NO_CLIPBOARD").is_some_and(|v| !v.is_empty()) {
+        return;
+    }
+    let text = text.to_string();
+    std::thread::spawn(move || {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let set = |v: &str| std::env::var_os(v).is_some_and(|x| !x.is_empty());
+        let mut tries: Vec<(&str, &[&str])> = vec![];
+        if set("WAYLAND_DISPLAY") {
+            tries.push(("wl-copy", &[]));
+        }
+        if set("DISPLAY") {
+            tries.push(("xclip", &["-selection", "clipboard"]));
+            tries.push(("xsel", &["--clipboard", "--input"]));
+        }
+        if cfg!(target_os = "macos") {
+            tries.push(("pbcopy", &[]));
+        }
+        for (cmd, args) in tries {
+            let Ok(mut child) = Command::new(cmd).args(args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() else { continue };
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+            if child.wait().is_ok_and(|s| s.success()) {
+                return;
+            }
+        }
+        // KDE without wl-clipboard (an argument holds at most 128K)
+        if text.len() < 100_000 {
+            for q in ["qdbus6", "qdbus", "qdbus-qt6"] {
+                let ok = Command::new(q).args(["org.kde.klipper", "/klipper", "setClipboardContents", &text])
+                    .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+                if ok.is_ok_and(|s| s.success()) {
+                    return;
+                }
+            }
+        }
+    });
 }
 
 /// Write a chat's export into `dir` as `name.kind`, or `name-2.kind` and on when that is taken:

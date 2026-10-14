@@ -248,8 +248,14 @@ cd tui && cargo build --release          # needs a Rust toolchain (rustup.rs); ~
 - **In the trace**, `[` and `]` select a reply: `c` copies it, `r` regenerates it, `b` branches
   from it, and `o` opens the chat of its first handoff or subagent. In the sidebar, `/` filters,
   `d` deletes, `r` renames, `p` pins, `e` edits the agent and `m` marks everything read.
-- **Mouse works too**: click an agent or a chat, scroll the trace. Replies can be copied with
-  `c` on a selected turn (`[` and `]` select) through the terminal's clipboard (OSC 52).
+- **Mouse works too**: click an agent or a chat, scroll the trace. **Drag in the trace to select
+  text**; letting go copies it, without the trace's bars and markers (Shift+drag gives the
+  terminal's own selection instead). Whole replies copy with `c` on a selected turn (`[` and `]`
+  select). Copies go through the terminal (OSC 52) and the desktop's clipboard too: wl-copy,
+  xclip, xsel or pbcopy if there, else KDE's Klipper, so terminals without OSC 52 work.
+- A running tool or command shows how long it has been going (`running · 12 s`), and a finished
+  one what it took (`done · 1 min 4 s`; time spent waiting for your approval left out). The web
+  UI shows the same on its tool cards.
 - Settings, agents, routines, email and calendars are edited in forms (Tab between fields,
   Space toggles, Ctrl+S saves). Chat titles, unread dots, model-written titles, live shell
   output, nested handoffs and compaction markers all arrive over the same event stream the

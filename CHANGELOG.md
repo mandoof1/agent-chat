@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### How long a tool runs
+- A running tool or shell command shows how long it has been going, counting up, in both
+  clients; once done, what it took (a second or more). Time spent waiting for your approval
+  isn't counted: the clock restarts when you approve. `tool_start` and `approval_done` events
+  carry the server's time (`ts`), so a chat opened mid-run counts right; `tool_result` has
+  `secs`, kept on the result as `_secs`.
+
+### Terminal client: select and copy with the mouse
+- Drag in the trace to select text (shown reversed, kept while you scroll); letting go copies it.
+  The trace's own bars and markers are left out, a code block's indentation kept. The mouse
+  stays the app's, so Shift+drag still gives the terminal's own selection.
+- Copying (a drag, `c` on a turn, /copy) also sets the desktop's clipboard: wl-copy, xclip, xsel
+  or pbcopy when there, else KDE's Klipper over D-Bus. OSC 52 alone did nothing in terminals
+  that don't support it or have it off. `AGENT_CHAT_NO_CLIPBOARD=1` leaves the desktop's
+  clipboard alone (the tests set it).
+
 ## 0.3.3 — 2026-10-14
 
 Subagents, MCP servers, the terminal client's thinking in full, a loop guard, "continue" after

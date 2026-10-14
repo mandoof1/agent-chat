@@ -367,6 +367,26 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
     }
     let lines: Vec<Line> = rendered.lines.iter().chain(foot).skip(app.scroll).take(h).cloned().collect();
     render(f, Paragraph::new(lines), inner);
+    app.trace_area = inner;
+    // text selected with the mouse, shown reversed (up to where each line's text ends)
+    if let Some(sel) = app.sel.filter(|s| s.moved && s.trace == app.trace.id) {
+        let ((l0, c0), (l1, c1)) = sel.span();
+        let rendered = app.rendered.as_ref().unwrap();
+        for y in 0..inner.height {
+            let i = app.scroll + y as usize;
+            if i < l0 || i > l1 || i >= rendered.lines.len() {
+                continue;
+            }
+            let end = rendered.lines[i].width().min(inner.width as usize);
+            let from = if i == l0 { c0 } else { 0 };
+            let to = if i == l1 { (c1 + 1).min(end) } else { end };
+            for x in from..to {
+                if let Some(cell) = f.buffer_mut().cell_mut((inner.x + x as u16, inner.y + y)) {
+                    cell.modifier.insert(Modifier::REVERSED);
+                }
+            }
+        }
+    }
     // (once the chat has loaded: before that it is only the list's summary of it)
     if app.trace.entries.is_empty() && !app.running && app.chat.as_ref().is_some_and(|c| c.get("messages").is_some()) {
         let aid = app.chat_agent_id();
@@ -669,6 +689,7 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
                 ("Alt+B", "hide or show the sidebar"), ("Alt+M", "memory"), ("Alt+R", "routines"), ("Alt+S", "settings"), ("Alt+A", "edit the agent"),
                 ("Alt+P", "pin or unpin the chat"), ("F2", "rename the chat"), ("Alt+D", "delete the chat"), ("Alt+X", "export as Markdown"),
                 ("Ctrl+Y", "bypass permissions on/off"), ("In the trace: [ ]", "select a reply · c copy · r regenerate · b branch · o open the handoff chat"),
+                ("Drag in the trace", "select text; letting go copies it (Shift+drag: the terminal's own selection)"),
                 ("In the sidebar", "j/k move · Enter open · / filter · d delete · r rename · p pin · e edit agent · m mark all read"),
                 ("Ctrl+C", "close a dialog, clear the box or the filter; quit when there's nothing to clear"), ("Ctrl+Q", "quit"),
             ];
@@ -933,6 +954,56 @@ mod tests {
 
     fn n(s: &str) -> String {
         format!("{s} {NASTY}")
+    }
+
+    #[tokio::test]
+    async fn dragging_in_the_trace_selects_and_copies_text() {
+        use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let dir = std::env::temp_dir().join(format!("agent-chat-tui-sel-test-{}", std::process::id()));
+        let mut app = App::new(Api::new("http://127.0.0.1:9"), Theme::dark(), dir.join("state.json"));
+        app.cfg.sidebar = false;
+        app.agents = vec![Agent { id: "a1".into(), name: "Agent".into(), ..Default::default() }];
+        app.chats = vec![ChatSummary { id: "c1".into(), title: "t".into(), agent_id: "a1".into(), status: "idle".into(), ..Default::default() }];
+        app.chat_id = Some("c1".into());
+        let chat = json!({ "id": "c1", "agent_id": "a1", "messages": [
+            { "role": "user", "content": "hi" },
+            { "role": "assistant", "content": "alpha beta gamma\n\ndelta epsilon 日本語 zeta" } ] });
+        app.chat = Some(chat.clone());
+        app.trace = Trace::from_chat(&chat, &app.agents, None);
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let rows = screen(&term);
+        let (y0, x0) = rows.iter().enumerate().find_map(|(y, r)| r.find("alpha").map(|b| (y, r[..b].chars().count()))).unwrap();
+        let (y1, x1) = rows.iter().enumerate().find_map(|(y, r)| r.find("日").map(|b| (y, r[..b].chars().count()))).unwrap();
+        let mouse = |kind, x: usize, y: usize| Event::Mouse(MouseEvent { kind, column: x as u16, row: y as u16, modifiers: KeyModifiers::NONE });
+        app.on_input(std::time::Instant::now(), mouse(MouseEventKind::Down(MouseButton::Left), x0 + 6, y0), None).await;
+        // the end lands on 日 (two columns wide): it comes whole
+        app.on_input(std::time::Instant::now(), mouse(MouseEventKind::Drag(MouseButton::Left), x1 + 1, y1), None).await;
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let reversed = |x: usize, y: usize| term.backend().buffer()[(x as u16, y as u16)].modifier.contains(Modifier::REVERSED);
+        assert!(reversed(x0 + 6, y0) && reversed(x1, y1) && !reversed(x0, y0), "the selection is highlighted");
+        app.on_input(std::time::Instant::now(), mouse(MouseEventKind::Up(MouseButton::Left), x1 + 1, y1), None).await;
+        assert_eq!(app.selected_text(), "beta gamma\n\ndelta epsilon 日");
+        assert!(app.toasts.iter().any(|t| t.text.starts_with("Copied 27 characters")), "{:?}", app.toasts.iter().map(|t| &t.text).collect::<Vec<_>>());
+        // the trace's bars and markers stay behind; a code block's indentation comes along
+        let chat = json!({ "id": "c1", "agent_id": "a1", "messages": [
+            { "role": "user", "content": "hi" },
+            { "role": "assistant", "content": "Code:\n\n```python\ndef f():\n    return 1\n```" } ] });
+        app.trace = Trace::from_chat(&chat, &app.agents, None);
+        app.touch();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let rows = screen(&term);
+        let (ya, xa) = rows.iter().enumerate().find_map(|(y, r)| r.find("● Code:").map(|b| (y, r[..b].chars().count()))).unwrap();
+        let yb = rows.iter().position(|r| r.contains("return 1")).unwrap();
+        app.on_input(std::time::Instant::now(), mouse(MouseEventKind::Down(MouseButton::Left), xa, ya), None).await;
+        app.on_input(std::time::Instant::now(), mouse(MouseEventKind::Drag(MouseButton::Left), 99, yb), None).await;
+        app.on_input(std::time::Instant::now(), mouse(MouseEventKind::Up(MouseButton::Left), 99, yb), None).await;
+        let copied = app.selected_text();
+        assert!(copied.starts_with("Code:\n") && copied.contains("def f():\n    return 1"), "{copied:?}");
+        // a click without a drag selects nothing
+        app.on_input(std::time::Instant::now(), mouse(MouseEventKind::Down(MouseButton::Left), x0, y0), None).await;
+        app.on_input(std::time::Instant::now(), mouse(MouseEventKind::Up(MouseButton::Left), x0, y0), None).await;
+        assert!(app.sel.is_none() && app.selected_text().is_empty());
     }
 
     fn app() -> App {
