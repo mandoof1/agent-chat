@@ -29,7 +29,7 @@ DEFAULT_SETTINGS = {
     "api_key": "llama",
     "model": "",
     "max_steps": 30,       # rounds of tool use per message; 0 = no limit
-    "parallel_subagents": 0,  # subagents that may run at once; 0 = automatic (llama-server's slots, else 1)
+    "parallel_subagents": 1,  # subagents that may run at once; 0 = as many as llama-server has slots
     "shell_timeout": 180,  # seconds a shell command may run; 0 = no limit
     "auto_compact": True,
     "compact_at": 70,      # % of the context window at which older messages get summarized

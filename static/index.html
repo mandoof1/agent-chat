@@ -319,7 +319,7 @@
         </label>
       </div>
       <div class="row">
-        <label class="grow"><span>Subagents at once <span class="hint">How many subagents an agent may run side by side. 0 = automatic: as many requests as llama-server serves at once (its -np), 1 for other servers.</span></span>
+        <label class="grow"><span>Subagents at once <span class="hint">How many subagents an agent may run side by side. 1 = one at a time. 0 = as many as llama-server has slots (-np), which share its context unless each has room of its own.</span></span>
           <input name="parallel_subagents" type="number" min="0" max="16">
         </label>
       </div>
