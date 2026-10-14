@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### Subagents
+- A new `subagent` tool lets an agent hand one self-contained task to a fresh copy of itself:
+  same instructions and tools, an empty context, a report back. Searching a codebase, reading
+  through many pages or doing one part of a bigger job no longer fills the agent's own context
+  with every file and page it looked at; only the report comes back. Coder, Researcher and
+  Reviewer have it (existing installs get it once, and keep it off if you untick it); tick
+  "Start subagents" in any agent's tools to give it to others.
+- Several subagent calls in one reply run side by side, as many at once as the model server
+  serves: llama-server's slot count (`-np`) by default, one at a time for other servers, or the
+  number in Settings → Agents → Subagents at once. With one slot they run one after the other,
+  so a subagent never pushes the others out of the server's prompt cache.
+- A subagent can't see the conversation or ask anything back, and can't start subagents of its
+  own. Each one gets its own read-only chat, nested in the trace under its task's label like a
+  handoff (`↳ subagent Part 1` in the terminal client) and listed as a subagent's chat. A model
+  error ends that subagent with an error result instead of failing the whole turn; Stop keeps
+  the reports that came back and marks the rest cancelled, in call order.
+
+### Terminal client: thinking you can read
+- Thinking shows in full, while it streams and after it ends, so the trace scrolls through all
+  of it. It used to show only the last six lines while the model thought and then collapse to
+  one line, so most of it was never on screen. **Alt+T** (or "Hide thinking" in Ctrl+K) hides
+  it again, remembered for next time; hidden, a block shows its size while it streams. Alt+O
+  still shows thinking together with every tool detail.
+- Thinking that has ended is wrapped once per width, not again on every frame: a reply in
+  progress after 100K characters of thinking redraws in about 1.6 ms (5 ms re-wrapping it all).
+
 ### MCP servers as agent tools
 - Settings → MCP takes servers in the `mcpServers` JSON shape MCP READMEs give for Claude
   Desktop (stdio servers: a command, args, env). Tick a server under Tools in an agent's

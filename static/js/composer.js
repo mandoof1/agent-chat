@@ -28,7 +28,9 @@ export function applyChatMode(parent) {
   const me = agentById(S.chat?.agent_id || S.chats.find((c) => c.id === S.chatId)?.agent_id);
   const caller = agentById(parent.caller_id);
   const root = S.chats.find((c) => c.id === parent.root_chat_id);
-  $("#sub-banner-text").textContent = `${me.name} is working for ${caller.name}. You can watch here; to reply, use the chat that started it.`;
+  $("#sub-banner-text").textContent = parent.subagent
+    ? `A subagent's chat: one task for ${me.name}. You can watch here; to reply, use the chat that started it.`
+    : `${me.name} is working for ${caller.name}. You can watch here; to reply, use the chat that started it.`;
   $("#sub-banner-open").textContent = root ? `Open “${root.title}”` : "Open the original chat";
   $("#sub-banner-open").onclick = () => openChat(parent.root_chat_id);
 }

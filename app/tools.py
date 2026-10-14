@@ -88,6 +88,7 @@ TOOL_INFO = [
     {"name": "browser_screenshot", "label": "Screenshot the page", "group": "Browser", "danger": False},
     {"name": "browser_close", "label": "Close the browser", "group": "Browser", "danger": False},
     {"name": "ask_agent", "label": "Talk to other agents", "group": "Agents", "danger": False},
+    {"name": "subagent", "label": "Start subagents", "group": "Agents", "danger": False},
     {"name": "email_list", "label": "List emails", "group": "Email", "danger": False},
     {"name": "email_search", "label": "Search emails", "group": "Email", "danger": False},
     {"name": "email_read", "label": "Read emails", "group": "Email", "danger": False},
@@ -110,6 +111,20 @@ def ask_agent_schema(names: list[str]) -> dict:
                                              "with this agent. Default false."}},
         ["agent", "message"],
     )
+
+
+SUBAGENT_SCHEMA = _fn(
+    "subagent",
+    "Start a subagent: a helper with your instructions and tools but a fresh, empty context. It works on one "
+    "self-contained task on its own and returns a report, so the details of that work never fill your own "
+    "context. Use it for a broad search, for reading through many files or pages, or for one separate part of "
+    "a bigger job. It cannot see this conversation and cannot ask you anything, so the task must say "
+    "everything it needs: the goal, the details and paths you already know, and what its report should "
+    "contain. Several subagent calls in one reply can run at the same time. Do small, quick things yourself.",
+    {"description": {"type": "string", "description": "A short label for the task, 3 to 6 words, shown to the user"},
+     "task": {"type": "string", "description": "The complete task, with all the context the subagent needs"}},
+    ["description", "task"],
+)
 
 
 # ---------------------------------------------------------------- helpers

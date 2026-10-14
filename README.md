@@ -205,7 +205,8 @@ cd tui && cargo build --release          # needs a Rust toolchain (rustup.rs); ~
 - **Everything is on the keyboard**: F1 lists it. Ctrl+K is the same palette as the web UI
   (chats by content, agents, commands); `n` or a number starts a chat; Enter sends, or queues
   while the agent works; `/` opens the slash commands; Alt+Y / Alt+A / Alt+N approve, approve
-  all for the run, or deny from anywhere (plain `y` / `a` / `n` when the trace has the focus); Ctrl+S stops; Alt+O opens every
+  all for the run, or deny from anywhere (plain `y` / `a` / `n` when the trace has the focus); Ctrl+S stops; Alt+T shows or
+  hides thinking (shown in full by default, as it streams and after); Alt+O opens every
   thinking block and tool result; Alt+F is the workspace drawer (Enter opens a file in a
   viewer); Alt+M memory, Alt+R routines, Alt+S settings, Alt+A the agent editor; F2 rename,
   Alt+P pin, Ctrl+G branch, Ctrl+E edit and resend your last message, Ctrl+R regenerate or
@@ -233,11 +234,11 @@ cd tui && cargo build --release          # needs a Rust toolchain (rustup.rs); ~
 | 📧 Mail | Reads, sorts and answers your email | team, email |
 | 📅 Planner | Knows your schedule and plans your days | team, calendar, read/write files |
 | 🧭 Orchestrator | Plans tasks and hands them out | team, list/read files |
-| 💻 Coder | Writes, runs and fixes code | team, files, shell |
-| 🔎 Researcher | Web research with sources | team, web search, fetch, write files |
+| 💻 Coder | Writes, runs and fixes code | team, subagents, files, shell |
+| 🔎 Researcher | Web research with sources | team, subagents, web search, fetch, write files |
 | 🌐 Browser | Drives a real Brave browser to open, read and act on web pages | team, browser, read/write files |
 | ✍️ Writer | Drafts and edits text | team, read/write files |
-| 🧐 Reviewer | Code review | team, list/read files |
+| 🧐 Reviewer | Code review | team, subagents, list/read files |
 
 "team" = the `ask_agent` tool, which reaches every other agent by default. Every agent also
 has memory unless you switch it off for that agent. New starter agents added in later versions
@@ -254,6 +255,7 @@ Personal Assistant, Tutor, Translator, Brainstormer and Data Analyst.
 | `web_fetch` | Downloads a page (up to 2 MB) and returns its readable text. |
 | `browser_navigate`, `browser_read`, `browser_links`, `browser_click`, `browser_type`, `browser_screenshot`, `browser_close` | Drive a real [Brave](https://brave.com/) browser for pages that need JavaScript, a login, or clicking/typing through steps. One shared session persists across the calls. See [Browser control](#browser-control). |
 | `ask_agent` | Sends a task or a question to another agent. The other agent runs its own tool loop. Its work shows nested in the card and as its own chat. Maximum depth is 3. |
+| `subagent` | Hands one self-contained task to a fresh copy of the agent (its instructions and tools, an empty context) and returns its report. Several in one reply run side by side. See [Subagents](#subagents). |
 | `remember`, `recall_memory`, `forget_memory` | Manage the shared memory about you. |
 | `email_list`, `email_search`, `email_read` | Read your mailbox (reading doesn't mark mail as read). |
 | `email_draft` | Saves a draft in your mailbox without sending. |
@@ -283,6 +285,28 @@ Personal Assistant, Tutor, Translator, Brainstormer and Data Analyst.
 
 All agents share `~/agent-chat/workspace/` unless you give one its own folder, so one
 agent can pick up files another one wrote.
+
+## Subagents
+
+An agent with the `subagent` tool ("Start subagents" in the editor) can hand one task to a
+copy of itself: the same instructions and tools, a fresh, empty context, and a report back.
+Use it the way Claude Code uses its subagents: to search a codebase, read through a pile of
+pages, or do one separate part of a bigger job, without filling the agent's own context with
+everything that was looked at. Only the report comes back.
+
+- **The task must stand alone.** A subagent can't see the conversation or ask anything back,
+  so the calling agent writes the whole task: goal, known details and paths, and what the
+  report should contain. It gets a short label (`description`) that the trace shows.
+- **Side by side.** Several subagent calls in one reply run at the same time, as many as the
+  model server serves at once: llama-server's slots (`--parallel N`) by default, one at a time
+  for other servers. Settings → Agents → **Subagents at once** overrides it. With
+  `--parallel 1` they run one after the other, which keeps each one's prompt in the server's
+  cache.
+- **One level.** A subagent can use the team (`ask_agent`) but can't start subagents itself.
+- **Its own chat.** Each subagent's work is a read-only chat, nested in the trace under its
+  task (`↳ subagent <label>` in the terminal client) and listed under the agent. A model error
+  ends that subagent with an error result; the calling agent carries on. Editing or
+  regenerating removes the subagents of the removed turns.
 
 ## Memory
 
@@ -540,7 +564,8 @@ That runs, in order: `tests/test_unit.py` (history, compaction, routines, memory
 `tests/e2e_queue.py`, `tests/e2e_memory.py`, `tests/e2e_routines.py`, `tests/e2e_v2.py`
 (pinning, branching, exports, approve-all, titles, workspace, images, live shell output,
 agent order), `tests/e2e_calendar.py`, `tests/e2e_mcp.py` (MCP servers, against the fake
-server in `tests/fake_mcp.py`), `tests/e2e_browser.py` (real headless Brave over a
+server in `tests/fake_mcp.py`), `tests/e2e_subagents.py` (subagents: their tools, results in
+call order, side by side or one at a time, Stop part way, errors, nesting), `tests/e2e_browser.py` (real headless Brave over a
 local page), `tests/e2e_ui.py` (the web UI itself in headless Brave: streaming,
 approvals, files, palette, branching, images, unread, errors, keyboard, mobile) and, when
 `cargo` is installed, the Rust unit tests (`cargo test` in `tui/`) and the terminal client in a

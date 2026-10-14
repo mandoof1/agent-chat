@@ -86,9 +86,15 @@ pub struct ToolStep {
     pub sub: Option<Sub>,
 }
 
+/// Ended thinking, wrapped for a width and theme and kept between frames: the reply in progress
+/// is drawn again on every token, and wrapping all of a long run's thinking each time takes
+/// milliseconds. (Thinking that has ended doesn't change.)
+#[derive(Clone, Debug, Default)]
+pub struct Wrapped(std::cell::RefCell<Option<(usize, &'static str, std::sync::Arc<Vec<Vec<Span<'static>>>>)>>);
+
 #[derive(Clone, Debug)]
 pub enum Step {
-    Thinking { text: String, live: bool, secs: Option<f64>, started: Option<std::time::Instant> },
+    Thinking { text: String, live: bool, secs: Option<f64>, started: Option<std::time::Instant>, wrapped: Wrapped },
     Text { text: String, live: bool },
     Tool(ToolStep),
     Notice(String),
@@ -113,6 +119,8 @@ pub struct UserEntry {
     pub text: String,
     pub ts: Option<f64>,
     pub from: Option<Who>,
+    /// The task a subagent was started with (`from` is the agent it is a copy of).
+    pub task: bool,
     pub queued: bool,
     pub images: Vec<String>,
     pub recalled: usize,
@@ -170,6 +178,7 @@ impl Trace {
         let agent_id = s(chat, "agent_id");
         let who = Who::from(agents.iter().find(|a| a.id == agent_id), &agent_id);
         let caller = chat.get("parent").and_then(|p| p.get("caller_id")).and_then(|c| c.as_str()).map(|cid| Who::from(agents.iter().find(|a| a.id == cid), cid));
+        let task = chat.get("parent").and_then(|p| p.get("subagent")).and_then(|s| s.as_bool()).unwrap_or(false);
         let results: std::collections::HashMap<String, &Value> = msgs.iter().filter(|m| s(m, "role") == "tool").map(|m| (s(m, "tool_call_id"), m)).collect();
         let dividers: std::collections::HashMap<usize, &Value> = chat
             .get("compactions")
@@ -190,7 +199,7 @@ impl Trace {
             match s(m, "role").as_str() {
                 "user" => {
                     turn_open = false;
-                    t.entries.push(Entry::User(user_entry(m, i, caller.clone())));
+                    t.entries.push(Entry::User(UserEntry { task, ..user_entry(m, i, caller.clone()) }));
                 }
                 "assistant" => {
                     if !turn_open {
@@ -251,6 +260,7 @@ fn user_entry(m: &Value, index: usize, from: Option<Who>) -> UserEntry {
         text: s(m, "content"),
         ts: m.get("_ts").and_then(|x| x.as_f64()),
         from,
+        task: false,
         queued: m.get("_queued").and_then(|q| q.as_bool()).unwrap_or(false),
         images: m.get("_images").and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default(),
         recalled: m.get("_recall").and_then(|r| r.as_str()).map(|r| r.lines().filter(|l| !l.trim().is_empty()).count()).unwrap_or(0),
@@ -268,7 +278,7 @@ fn append_assistant(steps: &mut Vec<Step>, m: &Value, results: &std::collections
     }
     if let Some(r) = m.get("reasoning_content").and_then(|r| r.as_str()) {
         if !r.is_empty() {
-            steps.push(Step::Thinking { text: r.to_string(), live: false, secs: m.get("_stats").and_then(|st| st.get("think_s")).and_then(|x| x.as_f64()), started: None });
+            steps.push(Step::Thinking { text: r.to_string(), live: false, secs: m.get("_stats").and_then(|st| st.get("think_s")).and_then(|x| x.as_f64()), started: None, wrapped: Wrapped::default() });
         }
     }
     let content = s(m, "content");
@@ -345,7 +355,7 @@ impl Trace {
                 }
                 match c.last_mut() {
                     Some(Step::Thinking { text: t, live: true, .. }) => t.push_str(text),
-                    _ => c.push(Step::Thinking { text: text.to_string(), live: true, secs: None, started: Some(std::time::Instant::now()) }),
+                    _ => c.push(Step::Thinking { text: text.to_string(), live: true, secs: None, started: Some(std::time::Instant::now()), wrapped: Wrapped::default() }),
                 }
             }
             "content" => {
@@ -405,7 +415,7 @@ impl Trace {
                 // this reply's thinking, still streaming or ended by its text or a call (`started`
                 // is cleared once a reply's end has timed it): the server's measure wins over the
                 // one taken here, which a replayed run (a chat opened mid-run) gets as about 0
-                Step::Thinking { live, secs, started, text } if *live || started.is_some() => {
+                Step::Thinking { live, secs, started, text, .. } if *live || started.is_some() => {
                     if *live && let Some(r) = message.get("reasoning_content").and_then(|r| r.as_str()) {
                         *text = r.to_string();
                     }
@@ -700,6 +710,7 @@ pub fn arg_summary(name: &str, a: &Value) -> String {
         "email_list" => format!("{}{}", if g("folder").is_empty() { "INBOX".to_string() } else { g("folder") }, if a.get("unread_only").and_then(|v| v.as_bool()).unwrap_or(false) { " · unread" } else { "" }),
         "email_send" | "email_draft" => format!("{} · {}", g("to"), g("subject")),
         "ask_agent" => one_line(&if g("message").is_empty() { g("task") } else { g("message") }, 80),
+        "subagent" => if g("description").trim().is_empty() { one_line(&g("task"), 80) } else { one_line(&g("description"), 80) },
         "find_tools" => if g("query").is_empty() { "all tools".into() } else { format!("“{}”", g("query")) },
         "call_tool" => one_line(&format!("{} {}", g("tool"), a.get("arguments").map(|v| v.to_string()).unwrap_or_default()), 80),
         "calendar_events" => {
@@ -777,9 +788,9 @@ pub struct Rendered {
     pub lines: Vec<Line<'static>>,
     /// Which turn (by index into entries) each line belongs to, for the copy/branch actions.
     pub owners: Vec<Option<usize>>,
-    /// What these lines were drawn for: the trace, width, verbosity, theme, and the day (a clock
-    /// label says "Oct 9, 14:02" once it isn't today).
-    key: (u64, usize, bool, &'static str, chrono::NaiveDate),
+    /// What these lines were drawn for: the trace, width, verbosity, thinking shown, theme, and
+    /// the day (a clock label says "Oct 9, 14:02" once it isn't today).
+    key: (u64, usize, bool, bool, &'static str, chrono::NaiveDate),
     /// The line each entry starts at, and how many entries at the front are settled: the ones
     /// before the last turn, which a run never changes (its events land in the last turn, or add
     /// entries after it).
@@ -792,6 +803,8 @@ pub struct RenderOpts<'a> {
     pub theme: &'a Theme,
     pub width: usize,
     pub verbose: bool,
+    /// Thinking shown in full, live and done (verbose shows it too).
+    pub thinking: bool,
     pub selected_turn: Option<usize>,
 }
 
@@ -805,7 +818,7 @@ pub fn render(trace: &Trace, opts: &RenderOpts) -> Rendered {
 /// streamed token re-renders the reply, not the whole history (which takes tens of milliseconds
 /// a frame in a long chat). A changed selection redraws from the first turn it touches.
 pub fn render_from(trace: &Trace, opts: &RenderOpts, prev: Option<Rendered>) -> Rendered {
-    let key = (trace.id, opts.width, opts.verbose, opts.theme.name, chrono::Local::now().date_naive());
+    let key = (trace.id, opts.width, opts.verbose, opts.thinking, opts.theme.name, chrono::Local::now().date_naive());
     let mut r = match prev.filter(|p| p.key == key) {
         Some(mut p) => {
             let mut keep = p.settled.min(trace.entries.len());
@@ -830,7 +843,7 @@ pub fn render_from(trace: &Trace, opts: &RenderOpts, prev: Option<Rendered>) -> 
                 r.push(Line::from(""), None);
                 let mut who = vec![];
                 match &u.from {
-                    Some(f) => who.push(Span::styled(format!("{} asked", f.name), Style::default().fg(f.color).add_modifier(Modifier::BOLD))),
+                    Some(f) => who.push(Span::styled(if u.task { format!("Task from {}", f.name) } else { format!("{} asked", f.name) }, Style::default().fg(f.color).add_modifier(Modifier::BOLD))),
                     None => who.push(Span::styled("You", Style::default().fg(th.muted).add_modifier(Modifier::BOLD))),
                 }
                 if let Some(ts) = u.ts {
@@ -950,24 +963,36 @@ fn render_steps(steps: &[Step], colors: &[Color], opts: &RenderOpts, r: &mut Ren
                 spans.push(Span::styled("working…", Style::default().fg(th.muted)));
                 r.push(Line::from(spans), owner);
             }
-            Step::Thinking { text, live, secs, .. } => {
+            Step::Thinking { text, live, secs, wrapped, .. } => {
+                // all of it, as it streams and after (the trace scrolls through it), or one line
+                let shown = opts.verbose || opts.thinking;
                 let label = if *live { "thinking…".to_string() } else if let Some(s) = secs { format!("thought for {}", fmt_secs(*s)) } else { "thoughts".to_string() };
                 let mut spans = prefix(colors, th, Some(("○", if *live { th.accent } else { dim(color, 2) })));
                 spans.push(Span::styled(label, Style::default().fg(if *live { th.accent } else { th.muted })));
-                if !opts.verbose && !*live {
-                    spans.push(Span::styled("  (Alt+O to show)", Style::default().fg(th.faint)));
+                if !shown {
+                    let size = if *live { format!("  {} chars", fmt_k(text.chars().count() as u64)) } else { String::new() };
+                    spans.push(Span::styled(format!("{size}  (Alt+T to show)"), Style::default().fg(th.faint)));
                 }
                 r.push(Line::from(spans), owner);
-                if opts.verbose || *live {
-                    let text = sanitize(text);
-                    let tail: String = if *live { text.lines().rev().take(6).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n") } else { text };
-                    for raw in tail.lines() {
-                        for w in wrap_spans(&[Span::styled(raw.to_string(), Style::default().fg(th.muted).add_modifier(Modifier::ITALIC))], inner.saturating_sub(2)) {
-                            let mut spans = prefix(colors, th, None);
-                            spans.push(Span::styled("  ", Style::default()));
-                            spans.extend(w);
-                            r.push(Line::from(spans), owner);
+                if shown {
+                    let wrap = || {
+                        let style = Style::default().fg(th.muted).add_modifier(Modifier::ITALIC);
+                        sanitize(text.trim()).lines().flat_map(|raw| wrap_spans(&[Span::styled(raw.to_string(), style)], inner.saturating_sub(2))).collect::<Vec<_>>()
+                    };
+                    let body = if *live {
+                        std::sync::Arc::new(wrap())
+                    } else {
+                        let mut cache = wrapped.0.borrow_mut();
+                        match &*cache {
+                            Some((w, name, body)) if *w == inner && *name == th.name => body.clone(),
+                            _ => cache.insert((inner, th.name, std::sync::Arc::new(wrap()))).2.clone(),
                         }
+                    };
+                    for w in body.iter() {
+                        let mut spans = prefix(colors, th, None);
+                        spans.push(Span::styled("  ", Style::default()));
+                        spans.extend(w.iter().cloned());
+                        r.push(Line::from(spans), owner);
                     }
                 }
             }
@@ -1043,7 +1068,7 @@ fn render_tool(t: &ToolStep, colors: &[Color], opts: &RenderOpts, r: &mut Render
     let th = opts.theme;
     let depth = colors.len();
     let inner = opts.width.saturating_sub(2 * depth + 1);
-    let _color = *colors.last().unwrap_or(&th.muted);
+    let color = *colors.last().unwrap_or(&th.muted);
     let (marker, mcolor, state_text, state_color) = match &t.state {
         ToolState::Writing => ("◐", th.accent, format!("writing · {} chars", t.raw_args.len()), th.accent),
         ToolState::Running => ("◐", th.accent, "running".to_string(), th.accent),
@@ -1051,9 +1076,19 @@ fn render_tool(t: &ToolStep, colors: &[Color], opts: &RenderOpts, r: &mut Render
         ToolState::Failed(l) => ("●", th.danger, l.clone(), th.danger),
         ToolState::NeedsApproval => ("◆", th.amber, "needs approval".to_string(), th.amber),
     };
-    let is_handoff = t.name == "ask_agent";
+    let is_sub = t.name == "subagent";
+    let is_handoff = t.name == "ask_agent" || is_sub;
     let mut spans = prefix(colors, th, Some((marker, mcolor)));
-    if is_handoff {
+    if is_sub {
+        // a copy of the agent whose trace this is: its color, the task's label
+        let label = t.args.get("description").and_then(|d| d.as_str()).map(text::line).filter(|d| !d.trim().is_empty()).unwrap_or_else(|| "task".into());
+        spans.push(Span::styled("↳ subagent ", Style::default().fg(th.muted)));
+        spans.push(Span::styled(label, Style::default().fg(t.sub.as_ref().map(|s| s.who.color).unwrap_or(color)).add_modifier(Modifier::BOLD)));
+        let task = one_line(t.args.get("task").and_then(|v| v.as_str()).unwrap_or(""), 80);
+        if !task.is_empty() {
+            spans.push(Span::styled(format!("  {task}"), Style::default().fg(th.muted)));
+        }
+    } else if is_handoff {
         let who = t.sub.as_ref().map(|s| s.who.clone());
         spans.push(Span::styled("↦ handoff ", Style::default().fg(th.muted)));
         if let Some(w) = &who {
@@ -1086,6 +1121,7 @@ fn render_tool(t: &ToolStep, colors: &[Color], opts: &RenderOpts, r: &mut Render
             "edit_file" => vec![("replace".into(), t.args.get("old_text").and_then(|v| v.as_str()).unwrap_or("").to_string()), ("with".into(), t.args.get("new_text").and_then(|v| v.as_str()).unwrap_or("").to_string())],
             "email_send" | "email_draft" => vec![("email".into(), format!("To: {}\nSubject: {}\n\n{}", t.args.get("to").and_then(|v| v.as_str()).unwrap_or(""), t.args.get("subject").and_then(|v| v.as_str()).unwrap_or(""), t.args.get("body").and_then(|v| v.as_str()).unwrap_or("")))],
             "ask_agent" => vec![("message".into(), t.args.get("message").or(t.args.get("task")).and_then(|v| v.as_str()).unwrap_or("").to_string())],
+            "subagent" if t.state != ToolState::Writing => vec![("task".into(), t.args.get("task").and_then(|v| v.as_str()).unwrap_or("").to_string())],
             _ if t.state == ToolState::Writing => vec![("arguments".into(), t.raw_args.clone())],
             _ => vec![],
         };
@@ -1206,7 +1242,7 @@ mod tests {
         assert_eq!(sub.steps.len(), 2);
         assert!(matches!(&sub.steps[0], Step::Tool(x) if x.state == ToolState::Done));
         let th = Theme::dark();
-        let out = render(&t, &RenderOpts { theme: &th, width: 80, verbose: true, selected_turn: None });
+        let out = render(&t, &RenderOpts { theme: &th, width: 80, verbose: true, thinking: false, selected_turn: None });
         let text: Vec<String> = out.lines.iter().map(|l| l.spans.iter().map(|s| s.content.to_string()).collect()).collect();
         assert!(text.iter().any(|l| l.contains("handoff") && l.contains("Coder")));
         assert!(text.iter().any(|l| l.contains("run_shell") && l.contains("done")));
@@ -1240,6 +1276,90 @@ mod tests {
     }
 
     #[test]
+    fn subagents_nest_under_their_task_live_and_saved() {
+        let ag = agents();
+        let th = Theme::dark();
+        let sa = |id: &str, label: &str| json!({ "id": id, "function": { "name": "subagent", "arguments": json!({ "description": label, "task": format!("look into {label}") }).to_string() } });
+        let chat = json!({
+            "agent_id": "coder",
+            "messages": [
+                { "role": "user", "content": "go" },
+                { "role": "assistant", "content": "", "tool_calls": [sa("a1", "Part one"), sa("a2", "Part two")] },
+                { "role": "tool", "tool_call_id": "a1", "content": "one found", "_sub": { "agent_id": "coder", "chat_id": "s1", "subagent": true, "messages": [
+                    { "role": "user", "content": "look into Part one" }, { "role": "assistant", "content": "one found" } ] } },
+                { "role": "tool", "tool_call_id": "a2", "content": "Error: the subagent stopped with an error before it finished: boom", "_sub": { "agent_id": "coder", "chat_id": "s2", "subagent": true, "messages": [
+                    { "role": "user", "content": "look into Part two" }, { "role": "assistant", "content": "", "_error": "boom" } ] } },
+                { "role": "assistant", "content": "Both back." }
+            ]
+        });
+        let saved = Trace::from_chat(&chat, &ag, None);
+        let lines = texts(&render(&saved, &opts(&th, 90, false)));
+        let head = |label: &str| lines.iter().find(|l| l.contains(&format!("↳ subagent {label}"))).cloned().unwrap_or_else(|| panic!("{label}: {lines:?}"));
+        assert!(head("Part one").contains("look into Part one") && head("Part one").ends_with("done"), "{lines:?}");
+        assert!(head("Part two").ends_with("failed"), "{lines:?}");
+        assert!(lines.iter().any(|l| l == "│ ● one found"), "the subagent's reply nests under it: {lines:?}");
+        assert!(lines.iter().any(|l| l.contains("✖ Error")), "{lines:?}");
+
+        // live, the two side by side: events of both arrive interleaved and land in their own branch
+        let mut t = Trace::from_chat(&json!({ "agent_id": "coder", "messages": [{ "role": "user", "content": "go" }] }), &ag, None);
+        t.start_turn(Who::from(ag.first(), "coder"), 1);
+        t.assistant_start(&[], &ag);
+        t.assistant_end(&[], &json!({ "content": "" }), &ag);
+        for (id, label) in [("a1", "Part one"), ("a2", "Part two")] {
+            t.tool_start(&[], id, "subagent", json!({ "description": label, "task": format!("look into {label}") }), &ag);
+        }
+        let (p1, p2) = (vec!["a1".to_string()], vec!["a2".to_string()]);
+        t.subagent_start(&p1, "coder", "s1", false, &ag);
+        t.subagent_start(&p2, "coder", "s2", false, &ag);
+        t.assistant_start(&p1, &ag);
+        t.assistant_start(&p2, &ag);
+        for k in 0..3 {
+            t.delta(&p1, "content", &format!("one{k} "), None, None, &ag);
+            t.delta(&p2, "content", &format!("two{k} "), None, None, &ag);
+        }
+        let turn = t.last_turn_mut().unwrap();
+        let text_of = |st: &Step| match st { Step::Tool(x) => x.sub.as_ref().map(|s| s.steps.iter().filter_map(|s| match s { Step::Text { text, .. } => Some(text.clone()), _ => None }).collect::<String>()), _ => None };
+        assert_eq!(text_of(&turn.steps[0]).as_deref(), Some("one0 one1 one2 "));
+        assert_eq!(text_of(&turn.steps[1]).as_deref(), Some("two0 two1 two2 "));
+        let Step::Tool(first) = &turn.steps[0] else { panic!() };
+        assert_eq!((first.sub.as_ref().unwrap().who.name.as_str(), first.sub.as_ref().unwrap().chat_id.as_deref()), ("Coder", Some("s1")));
+        let lines = texts(&render(&t, &opts(&th, 90, true)));
+        assert!(lines.iter().any(|l| l.ends_with("  task")), "verbose shows the task: {lines:?}");
+        assert!(lines.iter().any(|l| l.contains("look into Part two")), "{lines:?}");
+
+        // in the subagent's own chat, its task reads as one
+        let own = json!({ "agent_id": "coder", "parent": { "root_chat_id": "r", "caller_id": "coder", "subagent": true }, "messages": [{ "role": "user", "content": "look into it" }] });
+        assert!(texts(&render(&Trace::from_chat(&own, &ag, None), &opts(&th, 60, false))).iter().any(|l| l == "Task from Coder"));
+        let asked = json!({ "agent_id": "coder", "parent": { "root_chat_id": "r", "caller_id": "orchestrator" }, "messages": [{ "role": "user", "content": "build" }] });
+        assert!(texts(&render(&Trace::from_chat(&asked, &ag, None), &opts(&th, 60, false))).iter().any(|l| l == "Orchestrator asked"));
+    }
+
+    #[test]
+    fn thinking_shown_stays_whole_after_it_ends() {
+        let ag = agents();
+        let th = Theme::dark();
+        let mut t = Trace::empty();
+        t.start_turn(Who::from(ag.first(), "coder"), 1);
+        t.assistant_start(&[], &ag);
+        let thought: String = (1..=40).map(|i| format!("thought {i}\n")).collect();
+        t.delta(&[], "reasoning", &thought, None, None, &ag);
+        let shown = RenderOpts { thinking: true, ..opts(&th, 60, false) };
+        let live = texts(&render(&t, &shown));
+        t.delta(&[], "content", "answer", None, None, &ag);
+        t.assistant_end(&[], &json!({ "content": "answer", "reasoning_content": thought, "_stats": { "think_s": 3.0 } }), &ag);
+        let done = texts(&render(&t, &shown));
+        let count = |ls: &[String]| ls.iter().filter(|l| l.starts_with("│   thought ")).count();
+        assert_eq!((count(&live), count(&done)), (40, 40), "all forty lines, live and after: {done:?}");
+        assert!(done.iter().any(|l| l.ends_with("thought for 3 s")), "{done:?}");
+        // the lines it had while thinking stay where they were: a reader scrolled up keeps their place
+        assert_eq!(done[..live.len()], live.iter().map(|l| l.replace("thinking…", "thought for 3 s")).collect::<Vec<_>>()[..]);
+        let hidden = texts(&render(&t, &opts(&th, 60, false)));
+        assert_eq!(count(&hidden), 0);
+        assert!(hidden.iter().any(|l| l.ends_with("thought for 3 s  (Alt+T to show)")), "{hidden:?}");
+        assert_eq!(count(&texts(&render(&t, &opts(&th, 60, true)))), 40, "verbose shows it too");
+    }
+
+    #[test]
     fn wrapping_keeps_words() {
         let w = wrap_spans(&[Span::raw("one two three four five".to_string())], 9);
         let lines: Vec<String> = w.iter().map(|l| l.iter().map(|s| s.content.to_string()).collect()).collect();
@@ -1259,7 +1379,7 @@ mod tests {
     }
 
     fn opts(th: &Theme, width: usize, verbose: bool) -> RenderOpts<'_> {
-        RenderOpts { theme: th, width, verbose, selected_turn: None }
+        RenderOpts { theme: th, width, verbose, thinking: false, selected_turn: None }
     }
 
     fn long_chat(turns: usize) -> Value {
@@ -1527,9 +1647,17 @@ mod tests {
         t.delta(&[], "reasoning", &thought, None, None, &ag);
         let lines = texts(&render(&t, &opts(&th, 60, false)));
         assert!(!lines.iter().any(|l| l.ends_with("working…")));
+        assert!(!lines.iter().any(|l| l.contains("Step ")), "hidden: {lines:?}");
+        assert!(lines.iter().any(|l| l.ends_with(&format!("thinking…  {} chars  (Alt+T to show)", thought.len()))), "{lines:?}");
+        let shown = RenderOpts { thinking: true, ..opts(&th, 60, false) };
+        let lines = texts(&render(&t, &shown));
         let steps: Vec<&String> = lines.iter().filter(|l| l.contains("Step ")).collect();
-        assert_eq!(steps.len(), 6, "only the last six lines while it thinks: {lines:?}");
-        assert!(steps[5].ends_with("Step 10") && steps[0].ends_with("Step 5"));
+        assert_eq!(steps.len(), 10, "every line while it thinks, none dropped: {lines:?}");
+        assert!(steps[0].ends_with("Step 1") && steps[9].ends_with("Step 10"));
+        t.delta(&[], "reasoning", "Step 11 is a long one that goes on and on past the width of the trace, so it wraps", None, None, &ag);
+        let lines = texts(&render(&t, &shown));
+        let joined: String = lines.iter().skip_while(|l| !l.contains("Step 11")).take(3).map(|l| l.trim_start_matches(['│', ' '])).collect::<Vec<_>>().join(" ");
+        assert!(joined.contains("Step 11 is a long one") && joined.ends_with("so it wraps"), "wrapped, not cut: {lines:?}");
         // a call still being written shows its arguments; done, it goes
         t.delta(&[], "tool_args", "{\"query\": \"rust t", Some(0), Some("web_search"), &ag);
         let lines = texts(&render(&t, &opts(&th, 80, false)));
@@ -1838,7 +1966,7 @@ mod tests {
         // drawn: who asked, queued, recalled, images, the stopped mark, the error's retry hint
         let th = Theme::dark();
         let lines = texts(&render(&t, &opts(&th, 80, false)));
-        for want in ["Orchestrator asked", "2 memories recalled", "▎ 🖼 uploads/a.png", "· sent while it worked", "■ stopped here", "✖ Error", "Ctrl+R tries again", "thought for 2 s  (Alt+O to show)", "auto-approved", "5.5 tok/s · 2k in · 9 out"] {
+        for want in ["Orchestrator asked", "2 memories recalled", "▎ 🖼 uploads/a.png", "· sent while it worked", "■ stopped here", "✖ Error", "Ctrl+R tries again", "thought for 2 s  (Alt+T to show)", "auto-approved", "5.5 tok/s · 2k in · 9 out"] {
             assert!(lines.iter().any(|l| l.contains(want)), "{want:?} in {lines:#?}");
         }
     }
@@ -1854,7 +1982,7 @@ mod tests {
         t.entries.push(Entry::User(user_from_event(&json!({ "role": "user", "content": "one\n\ttwo", "_queued": true, "_recall": "a\n" }), 0)));
         t.start_turn(who, 1);
         let th = Theme::dark();
-        let r = render(&t, &RenderOpts { theme: &th, width: 40, verbose: false, selected_turn: Some(1) });
+        let r = render(&t, &RenderOpts { theme: &th, width: 40, verbose: false, thinking: false, selected_turn: Some(1) });
         let lines = texts(&r);
         assert!(lines.iter().any(|l| l.starts_with("You") && l.ends_with("· sent while it worked  · 1 memory recalled")), "{lines:?}");
         assert!(lines.contains(&"▎ one".to_string()) && lines.contains(&"▎     two".to_string()), "{lines:?}");
@@ -1870,8 +1998,8 @@ mod tests {
         t.start_turn(Who::from(ag.first(), "coder"), 1);
         let steps = &mut t.last_turn_mut().unwrap().steps;
         steps.push(Step::Waiting);
-        steps.push(Step::Thinking { text: "deep\nthoughts".into(), live: false, secs: None, started: None });
-        steps.push(Step::Thinking { text: "x".into(), live: false, secs: Some(125.0), started: None });
+        steps.push(Step::Thinking { text: "deep\nthoughts".into(), live: false, secs: None, started: None, wrapped: Wrapped::default() });
+        steps.push(Step::Thinking { text: "x".into(), live: false, secs: Some(125.0), started: None, wrapped: Wrapped::default() });
         steps.push(Step::Compacting { chars: 12_345 });
         steps.push(Step::Stopped);
         steps.push(Step::Notice("a notice long enough that it has to wrap onto a second line".into()));
@@ -1879,7 +2007,7 @@ mod tests {
         steps.push(Step::Tool(ToolStep { call_id: "e".into(), name: "edit_file".into(), args: json!({ "path": "b.py", "old_text": "a = 1", "new_text": "a = 2" }), raw_args: String::new(), state: ToolState::NeedsApproval, result: None, live_out: None, approval: Some("ap".into()), bypassed: None, cleared: false, sub: None }));
         steps.push(Step::Tool(ToolStep { call_id: "m".into(), name: "email_send".into(), args: json!({ "to": "a@b.c", "subject": "Hi", "body": "Dear you" }), raw_args: String::new(), state: ToolState::Done, result: None, live_out: None, approval: None, bypassed: Some("run".into()), cleared: false, sub: None }));
         let quiet = texts(&render(&t, &opts(&th, 60, false)));
-        for want in ["◌ working…", "○ thoughts  (Alt+O to show)", "○ thought for 2 min 5 s", "compacting: summarizing older messages… 12.3k chars", "■ stopped here", "◦ a notice long enough", "write_file  a.txt  auto-approved  running", "edit_file  b.py  needs approval", "email_send  a@b.c · Hi  auto-approved (this run)  done"] {
+        for want in ["◌ working…", "○ thoughts  (Alt+T to show)", "○ thought for 2 min 5 s", "compacting: summarizing older messages… 12.3k chars", "■ stopped here", "◦ a notice long enough", "write_file  a.txt  auto-approved  running", "edit_file  b.py  needs approval", "email_send  a@b.c · Hi  auto-approved (this run)  done"] {
             assert!(quiet.iter().any(|l| l.contains(want)), "{want:?} in {quiet:#?}");
         }
         assert!(quiet.iter().any(|l| l.contains("replace")) && quiet.iter().any(|l| l.contains("│ a = 2")), "an approval shows what it would do: {quiet:#?}");
@@ -1888,7 +2016,7 @@ mod tests {
         for want in ["deep", "thoughts", "content → a.txt", "│ hello", "  result", "│ Wrote 5 bytes", "To: a@b.c", "│ Dear you"] {
             assert!(loud.iter().any(|l| l.contains(want)), "verbose: {want:?} in {loud:#?}");
         }
-        assert!(!loud.iter().any(|l| l.contains("(Alt+O to show)")));
+        assert!(!loud.iter().any(|l| l.contains("(Alt+T to show)")));
     }
 
     #[test]
@@ -2019,6 +2147,7 @@ mod tests {
                     theme: if rng.below(15) == 0 { &light } else { &dark },
                     width: if rng.below(10) == 0 { 41 } else { 60 },
                     verbose: rng.below(8) == 0,
+                    thinking: rng.below(2) == 0,
                     selected_turn: if rng.below(3) == 0 { turns.get(rng.below(turns.len())).copied() } else { None },
                 };
                 let r = render_from(&t, &o, prev.take());

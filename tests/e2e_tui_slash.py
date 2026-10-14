@@ -43,6 +43,9 @@ STAMP = f"{int(time.time()) % 10**6:06d}{os.getpid() % 100:02d}"  # in every nam
 ROOT = tempfile.mkdtemp(prefix="agent-chat-tui-slash-")
 WORK = os.path.join(ROOT, "cwd")  # where the TUIs run, so where /export writes
 XDG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or ROOT, f"slash-{STAMP}")  # a state.json of our own
+os.makedirs(os.path.join(XDG, "agent-chat-tui"), exist_ok=True)
+with open(os.path.join(XDG, "agent-chat-tui", "state.json"), "w") as f:
+    json.dump({"thinking": False}, f)  # the sections were written for thinking hidden (it shows by default)
 CHANGED = ("base_url", "bypass_approvals", "auto_title", "auto_memory")  # settings this suite sets (and puts back)
 HINT = "Message  (Enter sends · Alt+Enter new line · / commands · F1 help)"  # the empty box's placeholder
 KEY = {"ctrl-p": "\x10", "ctrl-n": "\x0e", "home": "\x1b[H", "end": "\x1b[F", "left": "\x1b[D", "right": "\x1b[C", "alt-enter": "\x1b\r", "alt-y": "\x1by"}

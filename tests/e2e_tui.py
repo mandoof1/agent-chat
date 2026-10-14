@@ -122,11 +122,16 @@ def main():
         expect(t, "│ │ def hello():", 5, "the code block")
         expect(t, "Titled: hello there", 10, "the model-written title")
 
-        section("verbose shows the thinking text and tool results")
-        t.key("alt-o", 0.6)
-        expect(t, "The user said: hello there", 3)
-        t.key("alt-o", 0.4)
+        section("thinking shows in full by default; Alt+T hides it, verbose (Alt+O) shows it with the tool details")
+        expect(t, "The user said: hello there", 3, "the thinking text, shown by default")
+        t.key("alt-t", 0.6)
         absent(t, "The user said: hello there")
+        expect(t, "(Alt+T to show)", 3, "the hint on the hidden thinking")
+        assert json.load(open(state_file)).get("thinking") is False, "thinking off in state.json"
+        t.key("alt-o", 0.6)
+        expect(t, "The user said: hello there", 3, "verbose shows it")
+        t.key("alt-o", 0.4)
+        absent(t, "The user said: hello there")  # (hidden from here on, as the rest was written for)
 
         section("handoff with an approval: Alt+Y from the message box approves, the nested trace finishes")
         t.key("ctrl-k", 0.5)
@@ -169,6 +174,16 @@ def main():
         expect(t, "tick1", 10)
         expect(t, "│ ● run_shell  for i in", 25, "the finished command")
         absent(t, "output so far")
+
+        section("two subagents nest under their tasks, in the agent's color, and their reports come back")
+        t.send("subagents 2", 0.2)
+        t.key("enter", 0.5)
+        expect(t, "↳ subagent Part 1  which tools 1", 20)
+        expect(t, "↳ subagent Part 2  which tools 2", 20)
+        expect(t, "│ ● Tools: ask_agent", 20, "a subagent's report, nested")
+        expect(t, "● Finished. The tool returned:", 25, "the Coder's answer after both")
+        absent(t, "subagent, ")  # (the subagents' own tool lists have no subagent in them)
+        intact(t, "the subagents' nested traces")
 
         section("files drawer lists the workspace; Enter opens a file in the viewer")
         t.send("write code please", 0.2)

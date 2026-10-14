@@ -3,6 +3,10 @@
 Every agent has ask_agent and, by default, may contact every other agent (delegate_all).
 """
 
+# Tools added to starter agents after they shipped: given once to those agents in existing
+# installs too (store.seed_defaults), never again after the user takes them away.
+ADDED_TOOLS = {"subagent": ["coder", "researcher", "reviewer"]}
+
 DEFAULT_AGENTS = [
     {
         "id": "assistant",
@@ -94,7 +98,7 @@ DEFAULT_AGENTS = [
             "- Never use sudo and never touch files outside the workspace.\n"
             "- Finish with a brief summary: what changed, which files, and how to run it."
         ),
-        "tools": ["list_dir", "read_file", "write_file", "edit_file", "run_shell", "ask_agent"],
+        "tools": ["list_dir", "read_file", "write_file", "edit_file", "run_shell", "ask_agent", "subagent"],
     },
     {
         "id": "browser",
@@ -142,7 +146,7 @@ DEFAULT_AGENTS = [
             "- Clearly separate what the sources say from your own inferences.\n"
             "- If asked to save notes, write them to a Markdown file in the workspace."
         ),
-        "tools": ["web_search", "web_fetch", "write_file", "ask_agent"],
+        "tools": ["web_search", "web_fetch", "write_file", "ask_agent", "subagent"],
     },
     {
         "id": "writer",
@@ -170,6 +174,6 @@ DEFAULT_AGENTS = [
             "file and line, what goes wrong (a concrete input or scenario), and a suggested fix. Rank findings "
             "by severity. Do not pad the review with style nitpicks or praise. If the code looks correct, say so."
         ),
-        "tools": ["list_dir", "read_file", "ask_agent"],
+        "tools": ["list_dir", "read_file", "ask_agent", "subagent"],
     },
 ]

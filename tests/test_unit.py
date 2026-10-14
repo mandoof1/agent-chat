@@ -406,6 +406,61 @@ def test_agent_order():
     assert [a["id"] for a in store.list_agents()] == ids
 
 
+def test_tool_batches_group_only_neighbouring_subagent_calls():
+    from app import runner
+    calls = [{"id": i, "function": {"name": n}} for i, n in
+             enumerate(["subagent", "subagent", "read_file", "subagent", "ask_agent", "subagent", "subagent"])]
+    assert [[c["id"] for c in b] for b in runner.tool_batches(calls)] == [[0, 1], [2], [3], [4], [5, 6]]
+
+
+def test_added_tools_reach_existing_starter_agents_once():
+    store.seed_defaults()
+    coder = store.get_agent("coder")
+    store.save_agent(coder | {"tools": [t for t in coder["tools"] if t != "subagent"]})
+    raw = json.loads(store.SETTINGS.read_text())
+    raw.pop("added_tools", None)  # an install from before subagents
+    store.SETTINGS.write_text(json.dumps(raw))
+    store.seed_defaults()
+    assert store.get_agent("coder")["tools"].count("subagent") == 1
+    assert "subagent" not in store.get_agent("writer")["tools"]
+    store.save_agent(store.get_agent("coder") | {"tools": ["read_file"]})  # the user takes it away...
+    store.seed_defaults()
+    assert store.get_agent("coder")["tools"] == ["read_file"], "...and it stays away"
+    store.save_agent(coder)
+
+
+def test_chat_status_with_subagents_side_by_side():
+    from app import runner
+    root = store.create_chat("coder")
+    subs = [store.create_chat("coder") for _ in range(2)]
+    run = runner.Run(root)
+    try:
+        for k, sub in enumerate(subs):
+            run.stack.append(runner.View(run, sub, [f"c{k}"], 0))
+        assert [run.status_of(c["id"]) for c in [root, *subs]] == ["delegated", "running", "running"]
+        run.approval_paths["a"] = ("c1",)
+        assert [run.status_of(c["id"]) for c in [root, *subs]] == ["delegated", "running", "waiting"]
+        assert run.status_of("nobody") == "idle"
+    finally:
+        runner.views.pop(root["id"], None)
+        for c in [root, *subs]:
+            store.delete_chat(c["id"])
+
+
+def test_a_subagent_gets_its_own_prompt_and_no_subagent_tool():
+    from app import runner
+    store.seed_defaults()
+    coder = store.get_agent("coder")
+    names = lambda schemas: [t["function"]["name"] for t in schemas]
+    assert "subagent" in names(runner.agent_tools(coder, []))
+    assert "subagent" not in names(runner.agent_tools(coder, [], subagent=True))
+    chat = {"parent": {"root_chat_id": "r", "caller_id": "coder", "subagent": True}, "memory_profile": {"text": ""}}
+    prompt = runner.system_prompt(coder, coder, [], chat)
+    assert "You are working as a subagent" in prompt and "end your turn with a clear question" not in prompt
+    chat["parent"].pop("subagent")
+    assert "end your turn with a clear question" in runner.system_prompt(coder, coder, [], chat)
+
+
 def test_chat_age_in_markdown_export():  # the web footer's two facts: e2e_ui checks the same spans in the browser
     from app import main
     for secs, want in ((-5, "0s"), (0, "0s"), (45, "45s"), (59.9, "59s"), (60, "1m"), (719, "11m"), (3599, "59m"),

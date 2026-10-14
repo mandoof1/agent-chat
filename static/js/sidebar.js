@@ -201,7 +201,7 @@ function chatRow(c, q) {
   const a = agentById(c.agent_id);
   const status = c.status && c.status !== "idle" ? el("span", { class: `status ${c.status}`, title: STATUS_TEXT[c.status] })
     : isUnread(c) ? el("span", { class: "status unread", title: "New reply since you last looked" }) : el("span");
-  const forWho = c.parent ? `for ${agentById(c.parent.caller_id).name}` : "";
+  const forWho = c.parent ? (c.parent.subagent ? "subagent" : `for ${agentById(c.parent.caller_id).name}`) : "";
   const hit = q ? S.hits.get(c.id) : null;
   const sub = hit ? el("div", { class: "sub" }, `${a.name}: `, ...highlight(hit.snippet, q))
     : el("div", { class: "sub" }, [S.filter && !q ? "" : a.name, forWho, c.routine_id && "routine", timeAgo(c.updated)].filter(Boolean).join(" · "));
